@@ -96,9 +96,10 @@ only the controlled cases exercised, not general website self-maintenance or saf
 
 ## Out of scope and follow-up
 
-Browserbase portability is a subsequent compatibility probe, not a prerequisite for proving the local loop. Real
-portal authentication/MFA, arbitrary semantic extraction, general-purpose code generation, automatic repair promotion,
-and production tenant isolation are separate work. Preserve room for them without building abstractions prematurely.
+The local loop remains a bounded experiment. In parallel planning, Browserbase context persistence and safe human
+handoff are now early v1 acceptance gates, described in [the v1 plan](../v1-plan.md). V1 cannot launch on local
+script/repair evidence alone. Real patient portals, automatic MFA collection, arbitrary semantic extraction,
+general-purpose code generation, and automatic repair promotion remain outside this experiment.
 
 ## Devin handoff — do not start building
 

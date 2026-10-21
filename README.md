@@ -9,7 +9,7 @@ a stable contract backed by explicit verification and a review path when the out
 > **Status: planning the rebuild; implementation has not started.** This repository contains direction and an
 > experiment plan, not a working framework. It builds on lessons from the
 > [Pixie prototype](https://github.com/ricklopezio/gateway/pull/2).
-> See [Experiment 001](docs/experiments/001-script-generation-and-reviewed-repair.md).
+> See the [v1 launch plan](docs/v1-plan.md) and [Experiment 001](docs/experiments/001-script-generation-and-reviewed-repair.md).
 
 ## The problem
 
@@ -43,8 +43,8 @@ of the prototype. Deterministic instructions do not make a changing website dete
 - **Pixie** owns contracts, execution policy, verification, versioning, review, and repair promotion.
 - **Ultrafast** is the initial candidate for browser exploration and repair assistance. Code generation may require
   a separate coding agent; the experiment must establish that boundary rather than assume Ultrafast emits scripts.
-- **Browser infrastructure** may be local Chrome or a supported provider such as Browserbase. Browserbase integration
-  and artifact portability require compatibility testing; they are not established capabilities.
+- **Browser infrastructure:** local Chrome for development and Browserbase as the proposed hosted provider for v1.
+  Saved contexts and human handoff are early acceptance gates; compatibility is not yet established.
 - **Normal execution** should use scripts. Workflows needing ongoing semantic judgment may eventually declare explicit
   agent-assisted steps, but those are outside the first experiment.
 
@@ -66,6 +66,24 @@ undo external side effects.
 
 A failed script must not automatically become an unrestricted agent run. Repairing future executions and recovering
 a partially completed execution are separate responsibilities. A timeout after a write must not trigger a blind retry.
+
+## Authenticated workflows and human handoff in v1
+
+Session persistence has three separate parts: a Browserbase Context for saved login state, a bounded live browser
+session for interaction, and Pixie's durable run/checkpoint record for recovery. Saved authentication can expire;
+keep-alive does not make a browser immortal or preserve a worker's execution state.
+
+Bind each context to a tenant and authorized connection/login. Serialize runs using that login in v1. A caller
+receives a run ID and, when blocked, an authenticated Pixie handoff link. The user can watch, take control, complete
+login/MFA, and explicitly Resume. No raw CDP connection is exposed to the caller.
+
+Before enabling human control, fence and cancel automation and wait for acknowledgment that it has stopped issuing
+actions. Resume re-observes the page, checks account identity and checkpoint conditions, and reconciles uncertain
+writes. It never blindly replays a whole script. Authentication handoff does not invoke Ultrafast or authorize repair.
+
+Human login/MFA, bounded session lifetimes, Stop, context revocation, and restart cleanup belong in v1. Automated
+MFA collection and unrestricted collaborative control do not. See the [v1 plan](docs/v1-plan.md) for acceptance gates
+and the authenticated supplier-portal demo. All of this remains proposed, not implemented.
 
 ## Lessons from the prototype
 
