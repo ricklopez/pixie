@@ -1,0 +1,4 @@
+import {readdir,readFile,mkdir,writeFile,rm} from 'node:fs/promises';import path from 'node:path';
+const assets={};const types={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.svg':'image/svg+xml','.png':'image/png','.md':'text/plain; charset=utf-8'};
+async function walk(dir){for(const f of await readdir(dir,{withFileTypes:true})){const p=path.join(dir,f.name);if(f.isDirectory())await walk(p);else assets['/'+path.relative('public',p)]={body:(await readFile(p)).toString('base64'),type:types[path.extname(p)]||'application/octet-stream'};}}
+await walk('public');await rm('dist',{recursive:true,force:true});await mkdir('dist/server',{recursive:true});await writeFile('dist/server/index.js','const ASSETS='+JSON.stringify(assets)+';\n'+await readFile('server/worker.js','utf8'));

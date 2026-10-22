@@ -1,0 +1,46 @@
+/* Pixie Dust v0.1 — scoped application tokens. Add data-pixie to the app root.
+   Self-host DM Sans and Space Mono in the consuming app; fallbacks work offline. */
+[data-pixie] {
+ --px-bg:#0d0f10; --px-surface:#141916; --px-raised:#1c231e; --px-input:#101411;
+ --px-text:#f1f2eb; --px-muted:#a6afa3; --px-subtle:#8e998b;
+ --px-border:#354237; --px-control-border:#748570; --px-accent:#c9ff8a; --px-on-accent:#15200d;
+ --px-selected:#27351e; --px-success:#8ee0b2; --px-warning:#f3cd78; --px-danger:#ff9b98; --px-info:#a4c8ff;
+ --px-font:'DM Sans',system-ui,sans-serif; --px-mono:'Space Mono',ui-monospace,monospace;
+ --px-text-xs:.75rem; --px-text-sm:.875rem; --px-text-base:1rem; --px-text-lg:1.125rem;
+ --px-title:2rem; --px-leading:1.5;
+ --px-space-1:4px; --px-space-2:8px; --px-space-3:12px; --px-space-4:16px; --px-space-6:24px; --px-space-8:32px; --px-space-12:48px;
+ --px-radius-sm:6px; --px-radius:10px; --px-radius-lg:16px;
+ --px-fast:120ms; --px-normal:200ms; --px-reveal:400ms; --px-ease:cubic-bezier(.2,.8,.2,1);
+ background:var(--px-bg);color:var(--px-text);font-family:var(--px-font);line-height:var(--px-leading);font-size:var(--px-text-base);
+}
+[data-pixie] *{box-sizing:border-box}
+[data-pixie] :focus-visible{outline:2px solid var(--px-accent);outline-offset:3px}
+[data-pixie] .px-panel{background:var(--px-surface);border:1px solid var(--px-border);border-radius:var(--px-radius);padding:var(--px-space-6)}
+[data-pixie] .px-muted{color:var(--px-muted)}
+[data-pixie] .px-code{font-family:var(--px-mono);font-size:var(--px-text-sm);overflow-wrap:anywhere}
+[data-pixie] .px-button{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:10px 18px;border:1px solid transparent;border-radius:var(--px-radius-sm);font:600 var(--px-text-sm)/1.4 var(--px-font);background:var(--px-accent);color:var(--px-on-accent);cursor:pointer;transition:background var(--px-fast) var(--px-ease)}
+[data-pixie] .px-button:hover:not(:disabled){background:#ddffb5}
+[data-pixie] .px-button.secondary{background:var(--px-surface);border-color:var(--px-control-border);color:var(--px-text)}
+[data-pixie] .px-button.secondary:hover:not(:disabled){background:var(--px-raised)}
+[data-pixie] .px-button.danger{background:var(--px-danger);color:#33100f}
+[data-pixie] .px-button:disabled{background:#2d352d;color:#a2aba0;cursor:not-allowed}
+[data-pixie] .px-field{display:grid;gap:8px;font-size:var(--px-text-sm)}
+[data-pixie] .px-input{width:100%;min-height:44px;padding:10px 12px;background:var(--px-input);border:1px solid var(--px-control-border);border-radius:var(--px-radius-sm);font:inherit;color:var(--px-text)}
+[data-pixie] .px-input::placeholder{color:var(--px-subtle)}
+[data-pixie] .px-input[aria-invalid=true]{border-color:var(--px-danger)}
+[data-pixie] .px-badge{display:inline-flex;align-items:center;gap:6px;border:1px solid currentColor;border-radius:999px;padding:3px 10px;font-size:var(--px-text-xs);font-weight:500;color:var(--px-muted);white-space:nowrap}
+[data-pixie] [data-state=running]{color:var(--px-accent)}
+[data-pixie] [data-state=accepted]{color:var(--px-success)}
+[data-pixie] [data-state=review]{color:var(--px-warning)}
+[data-pixie] [data-state=failed]{color:var(--px-danger)}
+[data-pixie] [data-state=info]{color:var(--px-info)}
+[data-pixie] .px-table-wrap{overflow-x:auto}
+[data-pixie] .px-table{border-collapse:collapse;width:100%;font-size:var(--px-text-sm)}
+[data-pixie] .px-table th{text-align:left;font-weight:500;color:var(--px-muted)}
+[data-pixie] .px-table th,[data-pixie] .px-table td{padding:14px 12px;border-bottom:1px solid var(--px-border)}
+[data-pixie] .px-table tr[aria-selected=true]{background:var(--px-selected)}
+[data-pixie] .px-notice{border-left:3px solid var(--px-warning);background:var(--px-surface);padding:16px 20px;font-size:var(--px-text-sm)}
+[data-pixie] .px-node{padding:16px;border:1px solid var(--px-border);border-radius:var(--px-radius);background:var(--px-surface);min-width:160px}
+[data-pixie] .px-node[data-state]{border-color:currentColor}
+[data-pixie] .px-node p{font-size:var(--px-text-sm);color:var(--px-muted);margin:8px 0 0}
+@media(prefers-reduced-motion:reduce){[data-pixie] *,[data-pixie] *::before,[data-pixie] *::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}

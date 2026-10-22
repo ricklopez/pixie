@@ -1,76 +1,126 @@
 # Pixie
 
-**Show it once. Call it as an API.**
+**Build browser workflows with agents. Run them as verified APIs. Repair them when websites change.**
 
-Pixie turns a browser workflow that a person demonstrates once into a typed, versioned, independently verified API
-that other software can call.
+Pixie aims to turn browser workflows into APIs that maintain themselves as websites change. Agents help author
+and repair the automation; tested browser scripts handle ordinary execution without model calls. The caller gets
+a stable contract backed by explicit verification and a review path when the outcome is uncertain.
 
-> **Status:** rebuild in progress. This repository currently contains only this README. It is a clean rebuild of the
-> Pixie prototype developed in [`ricklopezio/gateway`](https://github.com/ricklopezio/gateway)
-> ([PR #2](https://github.com/ricklopezio/gateway/pull/2)).
+> **Status: planning the rebuild; implementation has not started.** This repository contains direction and an
+> experiment plan, not a working framework. It builds on lessons from the
+> [Pixie prototype](https://github.com/ricklopezio/gateway/pull/2).
+> See the [v1 launch plan](docs/v1-plan.md) and [Experiment 001](docs/experiments/001-script-generation-and-reviewed-repair.md).
+
+## Sites and demos
+
+The [sites directory](sites/README.md) includes the public Pixie landing page, vision site, and clickable v1 demo.
+They are regular source folders in this repository, with local run instructions. The v1 demo illustrates local
+verification, human handoff, Jev traces, and one-button Render publication; it does not implement the actual framework.
 
 ## The problem
 
-More and more essential business data and actions live only behind websites: portals with no API, internal tools,
-SaaS dashboards. Browser automations and agent workflows are becoming de facto data sources, but they are usually
-built as one-off scripts or unconstrained agent prompts. Applications that depend on them need what any other
-enterprise data source provides:
+Business data and actions often live behind websites with no suitable API. Browser scripts and agent prompts can
+access them, but applications need dependable dependencies: explicit inputs and outputs, controlled side effects,
+safe retry behavior, evidence of completion, and maintenance when the website changes.
 
-- a stable, typed contract (inputs, outputs, errors)
-- versioning, so a change never silently alters a published behavior
-- account-scoped execution and session isolation
-- progress, deadlines and explicit failure states
-- results that are checked against evidence, not just reported by a model
+Our focus is preserving the API contract while maintaining the browser integration underneath it. A changed button
+should not require every caller to edit its code. A changed business rule must not be silently treated as a button repair.
 
-Pixie is the API framework layer for browser automations: the "LoopBack for browser workflows".
+## Proposed lifecycle
 
-## How it works
+1. **Demonstrate and author.** Use local Chrome and Jev Ultrafast to explore an authorized workflow. Capture actions,
+   semantic targets, input bindings, and observed outcomes with sensitive values excluded from durable artifacts.
+2. **Generate.** Produce a parameterized browser script with stable locators, explicit waits, bounded actions,
+   preconditions, and postconditions. A successful trace is a starting point, not proof of generality.
+3. **Validate.** Execute without a model across different inputs and negative cases. Check identity, completeness,
+   and side effects independently of agent completion claims.
+4. **Publish.** Package the script, contract, verification checks, dependencies, and required browser capabilities
+   as an immutable implementation revision associated with an API contract version.
+5. **Execute and observe.** Run the tested script without model calls on the normal path. Return verified data or
+   an explicit failure/review state, with sanitized evidence and execution history.
+6. **Repair under review.** On a supported failure, let the agent propose a narrowly scoped patch. Retest it against
+   the unchanged contract and regression suite. Require human approval before promotion in the first experiment.
 
-1. **Record** — create an automation with a start URL and demonstrate the task in a dedicated, controlled Chrome.
-   Real browser events are captured with semantic targets; typed values are not stored.
-2. **Review and parameterize** — mark variable inputs (typed, required/optional), outputs, ordered checkpoints and
-   success assertions. Credentials are secret references, never recorded values.
-3. **Test** — run with different inputs. The agent (Jev Ultrafast) chooses actions within the reviewed checkpoints;
-   deterministic checks verify identity, schema and completeness independently of the model.
-4. **Publish** — write an immutable revision and expose its `/v1` endpoints plus an OpenAPI document. A new edit
-   creates a new draft; published revisions never change.
-5. **Invoke** — a separate client calls the endpoint and gets either verified, typed data or an explicit
-   `needs_review` result with the reason. A wrong or incomplete result is never reported as success.
-6. **Inspect** — every run keeps its decisions, browser evidence and verification results for review.
+Script generation and repair are capabilities we must build around Ultrafast; they are not demonstrated features
+of the prototype. Deterministic instructions do not make a changing website deterministic. Verification runs every time.
 
-## Core principles
+## Boundaries and execution options
 
-- **Verified, not trusted.** Model output proposes actions; independent checks decide whether a result is accepted.
-- **Proposed ≠ allowed ≠ executed ≠ verified.** Each stage of an action is distinguished and recorded.
-- **Immutable revisions.** Callers pin to a version; publishing requires a passing test of the exact draft checksum.
-- **Isolation by default.** Each account gets its own browser profile and serialized execution; tenants cannot see
-  each other's runs, evidence or sessions.
-- **No secrets at rest in definitions, exports or logs.** Exports exclude caller inputs, browser state and identities.
-- **Honest scope.** No fabricated metrics or invented reasoning in the UI; limitations are documented.
+- **Pixie** owns contracts, execution policy, verification, versioning, review, and repair promotion.
+- **Ultrafast** is the initial candidate for browser exploration and repair assistance. Code generation may require
+  a separate coding agent; the experiment must establish that boundary rather than assume Ultrafast emits scripts.
+- **Browser infrastructure:** local Chrome for development and Browserbase as the selected hosted browser provider for v1.
+  Saved contexts and human handoff are early acceptance gates; compatibility is not yet established.
+- **Normal execution** should use scripts. Workflows needing ongoing semantic judgment may eventually declare explicit
+  agent-assisted steps, but those are outside the first experiment.
 
-## Planned components
+We should reuse browser infrastructure rather than recreate it. An HTTP wrapper, hosted browser, or CLI alone is
+not our differentiation. The hypothesis is that teams need a reusable way to maintain verified browser operations.
 
-| Component | Responsibility |
+## Local to hosted in one publish
+
+V1 targets **Render + Browserbase**. Build and test locally, then click **Publish API** in Studio. Pixie packages
+the tested revision, deploys to the configured Render runtime, runs hosted checks through Browserbase, and activates
+the REST/OpenAPI and MCP interfaces only after they pass. Failed publication preserves the previous active revision.
+
+The open-source edition uses your own Render API key and Browserbase API key, with required project/workspace
+settings. Configure providers once through secure setup; keep keys out of frontend code and source control.
+You own the infrastructure accounts and charges. Local browser login is not automatically copied to the cloud.
+This is the selected design, not an implemented deployment feature; the clickable demo uses no real keys or services.
+
+## Contracts and maintenance
+
+| Change | Proposed treatment |
 |---|---|
-| Studio (web) | Record, review, test, publish, API explorer, run inspector (data-flow / decision view) |
-| API | Schema validation, identity, registry, account queue, run lifecycle, `/v1` endpoints |
-| Recorder | Controlled Chrome over CDP, event capture, sanitization |
-| Definition | Typed automation contract, checksums, assertions |
-| Engine worker | Jev Ultrafast action loop driven by reviewed checkpoints, extraction, guards |
-| CLI (`pixie`) | `init`, `doctor`, `dev`, `list`, `test`, `publish` |
+| Locator, layout, or navigation repair that preserves behavior | New implementation revision behind the same contract |
+| Changed input requirements, output meaning, or permitted side effects | Explicit contract revision and caller migration decision |
+| Expired login or MFA | Authentication handoff, not a script repair |
+| Ambiguous target or uncertain write outcome | Reconciliation or human review before further action |
 
-Technology choices for the rebuild will be recorded here as they are made.
+Published artifacts remain immutable. A reviewed promotion changes which implementation serves a contract; callers
+may pin an implementation for reproducibility. Keep promotion history and allow rollback. Rolling code back does not
+undo external side effects.
 
-## Lessons carried over from the prototype
+A failed script must not automatically become an unrestricted agent run. Repairing future executions and recovering
+a partially completed execution are separate responsibilities. A timeout after a write must not trigger a blind retry.
 
-- One controlled Chrome per account profile, reached over CDP, can be shared by the recorder and the Jev engine
-  without forking the engine.
-- Writes (create/update/delete) need pre-write guards and post-write assertions; duplicate, ambiguous, nonexistent or
-  out-of-scope targets must end in `needs_review` with no change.
-- Browser pools need atomic port reservation, collision-safe profile directories and recovery when a Chrome loses its
-  last tab.
-- Review exports must be generated from schemas, not copied from real runs.
+## Authenticated workflows and human handoff in v1
+
+Session persistence has three separate parts: a Browserbase Context for saved login state, a bounded live browser
+session for interaction, and Pixie's durable run/checkpoint record for recovery. Saved authentication can expire;
+keep-alive does not make a browser immortal or preserve a worker's execution state.
+
+Bind each context to a tenant and authorized connection/login. Serialize runs using that login in v1. A caller
+receives a run ID and, when blocked, an authenticated Pixie handoff link. The user can watch, take control, complete
+login/MFA, and explicitly Resume. No raw CDP connection is exposed to the caller.
+
+Before enabling human control, fence and cancel automation and wait for acknowledgment that it has stopped issuing
+actions. Resume re-observes the page, checks account identity and checkpoint conditions, and reconciles uncertain
+writes. It never blindly replays a whole script. Authentication handoff does not invoke Ultrafast or authorize repair.
+
+Human login/MFA, bounded session lifetimes, Stop, context revocation, and restart cleanup belong in v1. Automated
+MFA collection and unrestricted collaborative control do not. See the [v1 plan](docs/v1-plan.md) for acceptance gates
+and the authenticated supplier-portal demo. All of this remains proposed, not implemented.
+
+## Lessons from the prototype
+
+- Todo CRUD showed the value of exact-target guards, before/after checks, explicit review states, and idempotency.
+  API request deduplication alone does not solve an uncertain browser-side write.
+- Hacker News showed that schema-valid output can still be wrong: presence/type checks did not establish uniqueness
+  or relevance. Acceptance criteria must express the actual promise, with uncertainty acknowledged where necessary.
+- The prototype called the model during execution; it did not export standalone scripts from successful runs.
+- Browser lifecycle, account isolation, authentication, and sanitized evidence remain essential even with scripted execution.
+- A model's `DONE` or an HTTP success response is not proof that the business operation succeeded.
+
+## First milestone
+
+Prove one small loop using a controlled Todo fixture: agent-assisted authoring, generated scripts, model-free CRUD,
+a deliberate website change, a proposed repair, independent regression checks, and human-approved promotion.
+Include an ambiguous write outcome to establish that recovery does not duplicate the action.
+
+The [experiment plan](docs/experiments/001-script-generation-and-reviewed-repair.md) defines scope, gates, evidence,
+and stopping conditions. Do not build the broader framework or begin this experiment until explicitly authorized.
 
 ## Acknowledgements
 
-- Agent engine: [browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast) (MIT).
+The prototype used [Jev Ultrafast](https://github.com/browser-use/jev-ultrafast) as its browser decision engine.

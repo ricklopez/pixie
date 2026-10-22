@@ -1,0 +1,2 @@
+import {Miniflare} from 'miniflare';import {readFile,readdir} from 'node:fs/promises';
+const mf=new Miniflare({host:'127.0.0.1',port:4189,workers:[{name:'pixie',modules:true,scriptPath:'dist/server/index.js',compatibilityDate:'2026-08-01',d1Databases:['DB']}]});const db=await mf.getD1Database('DB');for(const f of await readdir('drizzle'))if(f.endsWith('.sql'))await db.prepare(await readFile('drizzle/'+f,'utf8')).run();console.log(String(await mf.ready));process.on('SIGINT',async()=>{await mf.dispose();process.exit()});
