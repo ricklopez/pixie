@@ -24,10 +24,27 @@ test("MCP tools share published operation behavior with REST", async () => {
     const { id } = await publishEligibility(built.app, built.runs);
     const client = await makeClient(TOKENS.client);
     try {
-      const listed = result<{ id: string; latestRevision: number }[]>(await client.callTool({ name: "list_operations", arguments: {} }));
+      const listed = result<{ id: string; latestRevision: number; repository?: string; method?: string; version?: string }[]>(await client.callTool({ name: "list_operations", arguments: {} }));
       assert.equal(listed.length, 1);
       assert.equal(listed[0]?.id, id);
       assert.equal(listed[0]?.latestRevision, 1);
+      assert.equal(listed[0]?.repository, id);
+      assert.equal(listed[0]?.method, "get");
+      assert.equal(listed[0]?.version, "1.0");
+      const contractStarted = result<{ runId: string }>(await client.callTool({
+        name: "invoke", arguments: { repository: id, method: "get", version: 1, input: { memberId: "DEMO-1002" }, accountId: "acct_demo" }
+      }));
+      let contractRead: { state: string; result?: unknown } = { state: "queued" };
+      for (let n = 0; n < 50; n += 1) {
+        contractRead = result(await client.callTool({
+          name: "get_run", arguments: { repository: id, method: "get", runId: contractStarted.runId }
+        }));
+        if (contractRead.state === "completed") break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.equal(contractRead.state, "completed");
+      const contractRest = await call(built.app, TOKENS.client, "GET", `/v1/repositories/${id}/operations/get/runs/${contractStarted.runId}/result`);
+      assert.deepEqual(contractRead.result, contractRest.json);
       const otherTenant = await makeClient(TOKENS.otherTenantClient);
       try {
         assert.deepEqual(result(await otherTenant.callTool({ name: "list_operations", arguments: {} })), []);

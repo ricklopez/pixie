@@ -36,6 +36,8 @@ export interface CreateRunParams {
   callerId: string;
   kind: "test" | "endpoint";
   input: unknown;
+  operationVersionId?: string | null;
+  adapterRevisionId?: string | null;
   idempotencyKey?: string | null;
 }
 
@@ -118,6 +120,8 @@ export class RunManager {
       tenant_id: params.tenantId,
       automation_id: params.automationId,
       revision: params.revision,
+      operation_version_id: params.operationVersionId ?? null,
+      adapter_revision_id: params.adapterRevisionId ?? null,
       account_id: params.accountId,
       connection_id: null,
       caller_id: params.callerId,
@@ -135,10 +139,10 @@ export class RunManager {
     };
     this.db
       .prepare(
-        `INSERT INTO runs (id, tenant_id, automation_id, revision, account_id, connection_id, caller_id, kind, state, input, idempotency_key, request_hash, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO runs (id, tenant_id, automation_id, revision, operation_version_id, adapter_revision_id, account_id, connection_id, caller_id, kind, state, input, idempotency_key, request_hash, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(run.id, run.tenant_id, run.automation_id, run.revision, run.account_id, run.connection_id, run.caller_id, run.kind, run.state, run.input, run.idempotency_key, run.request_hash, run.created_at);
+      .run(run.id, run.tenant_id, run.automation_id, run.revision, run.operation_version_id, run.adapter_revision_id, run.account_id, run.connection_id, run.caller_id, run.kind, run.state, run.input, run.idempotency_key, run.request_hash, run.created_at);
     this.recordEvent(run.id, { type: "queued", position: (this.queues.get(run.account_id)?.length ?? 0) + (this.active.has(run.account_id) ? 1 : 0) });
     this.enqueue(run.account_id, run.id, params.definition);
     return { ok: true, run, reused: false };

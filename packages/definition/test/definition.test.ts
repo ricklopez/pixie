@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   canonicalJson,
+  compatibility,
   definitionChecksum,
   eligibilityOverviewDefinition,
   inputJsonSchema,
@@ -53,6 +54,50 @@ test("json schemas follow the typed fields", () => {
   const output = outputJsonSchema(def);
   assert.deepEqual(output.properties.observedAt, { type: "string", format: "date-time" });
   assert.deepEqual(output.properties.effectiveFrom, { type: "string", format: "date" });
+});
+
+test("compatibility classifies initial, optional, required, removed, and semantic contract changes", () => {
+  const baseline = {
+    inputs: [{ name: "memberId", type: "string" as const, required: true, source: { kind: "caller" as const }, binding: { checkpointId: "search", targetLabel: "Member ID" } }],
+    outputs: [{ name: "status", type: "string" as const, required: true, extractor: { kind: "labelValue" as const, checkpointId: "result", label: "Status" } }],
+    effect: "read" as const,
+    assertions: [{ kind: "required" as const, output: "status" }],
+    allowedOrigins: ["https://portal.example"],
+    limits: { maxActions: 5, deadlineMs: 10_000 },
+    keyFields: ["status"]
+  };
+  const result = (next: typeof baseline) => compatibility(baseline, next);
+
+  assert.deepEqual(compatibility(null, baseline), { level: "major", changes: [{ path: "contract", kind: "initial" }] });
+  assert.equal(result({ ...baseline, outputs: [...baseline.outputs, { name: "note", type: "string", required: false, extractor: { kind: "labelValue", checkpointId: "result", label: "Note" } }] }).level, "minor");
+  assert.deepEqual(result({ ...baseline, inputs: [...baseline.inputs, { name: "region", type: "string", required: false, source: { kind: "caller" }, binding: { checkpointId: "search", targetLabel: "Region" } }] }).level, "minor");
+  assert.equal(result({ ...baseline, inputs: [...baseline.inputs, { name: "region", type: "string", required: true, source: { kind: "caller" }, binding: { checkpointId: "search", targetLabel: "Region" } }] }).level, "major");
+  assert.equal(result({ ...baseline, outputs: [] }).level, "major");
+  assert.equal(result({ ...baseline, outputs: [{ ...baseline.outputs[0]!, type: "number" }] }).level, "major");
+  assert.equal(result({ ...baseline, outputs: [{ ...baseline.outputs[0]!, description: "A different status meaning" }] }).level, "major");
+  assert.equal(result({ ...baseline, inputs: [{ ...baseline.inputs[0]!, required: false }] }).level, "minor");
+  assert.equal(result({ ...baseline, inputs: [{ ...baseline.inputs[0]!, required: false, type: "number" }] }).level, "major");
+  assert.equal(result({ ...baseline, outputs: [{ ...baseline.outputs[0]!, required: false }] }).level, "major");
+  assert.equal(result({ ...baseline, keyFields: ["memberId"] }).level, "major");
+  assert.equal(result({ ...baseline, effect: "write" }).level, "major");
+  assert.equal(result({ ...baseline, assertions: [] }).level, "major");
+  assert.equal(result({ ...baseline, allowedOrigins: ["https://other.example"] }).level, "major");
+  assert.equal(result({ ...baseline, limits: { maxActions: 6, deadlineMs: 10_000 } }).level, "major");
+});
+
+test("compatibility treats implementation-only changes as adapter revisions", () => {
+  const contract = {
+    inputs: [],
+    outputs: [{ name: "status", type: "string" as const, required: true, extractor: { kind: "labelValue" as const, checkpointId: "result", label: "Status" } }],
+    effect: "read" as const,
+    assertions: [],
+    allowedOrigins: ["https://portal.example"],
+    limits: { maxActions: 5, deadlineMs: 10_000 }
+  };
+  assert.deepEqual(compatibility(contract, { ...contract, outputs: [{ ...contract.outputs[0]!, extractor: { ...contract.outputs[0]!.extractor, label: "Status text" } }] }), {
+    level: "adapter",
+    changes: []
+  });
 });
 
 const observedAt = "2026-09-26T12:00:00.000Z";

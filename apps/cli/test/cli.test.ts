@@ -11,6 +11,7 @@ interface RequestRecord {
   url: string;
   auth: string | undefined;
   idempotencyKey: string | undefined;
+  contractVersion: string | undefined;
   body: unknown;
 }
 
@@ -61,6 +62,7 @@ async function withApi(run: (baseUrl: string, requests: RequestRecord[]) => Prom
         url: req.url ?? "/",
         auth: req.headers.authorization,
         idempotencyKey: req.headers["idempotency-key"] as string | undefined,
+        contractVersion: req.headers["pixie-contract-version"] as string | undefined,
         body
       };
       requests.push(record);
@@ -154,6 +156,14 @@ async function withApi(run: (baseUrl: string, requests: RequestRecord[]) => Prom
       if (path === "/studio/automations/auto-1/publish" && record.method === "POST") {
         return send(201, { automationId: "auto-1", revision: 1, checksum: "published-checksum", openapiUrl: "http://127.0.0.1:4180/v1/automations/auto-1/openapi.json" });
       }
+      if (path === "/studio/models" && record.method === "GET") return send(200, [{ name: "repo.get.output", major: 1, minor: 0, identityFields: ["memberId"] }]);
+      if (path === "/studio/repositories" && record.method === "GET") return send(200, [{ name: "repo", operationCount: 1 }]);
+      if (path === "/studio/operations" && record.method === "GET") return send(200, [{ repository: "repo", method: "get", version: "1.0", adapterRevision: 1 }]);
+      if (path === "/studio/automations/auto-1/contract" && record.method === "GET") return send(200, {
+        repository: "repo", method: "get", compatibility: { level: "minor", changes: [{ path: "outputs.note", kind: "optional_added" }] },
+        current: { major: 1, minor: 0, adapterRevision: 1 }, next: { major: 1, minor: 1, adapterRevision: 1 }
+      });
+      if (path === "/studio/operations/op-1/retire" && record.method === "POST") return send(200, { operation: { repository: "repo", method: "get", version: "1.0" }, bindings: [{ major: 1 }] });
       if (path === "/studio/automations/auto-unready/publish" && record.method === "POST") {
         return send(409, { error: "only automations in state 'ready' can be published" });
       }
@@ -191,6 +201,9 @@ async function withApi(run: (baseUrl: string, requests: RequestRecord[]) => Prom
       if (path === "/v1/automations/auto-1/runs/public-run-1/result" && record.method === "GET") {
         return send(200, { runId: "public-run-1", automationId: "auto-1", accepted: true, data: { memberId: "DEMO-1002" }, checks: verification.checks, observedAt: "now" });
       }
+      if (path === "/v1/repositories/repo/operations/get/runs" && record.method === "POST") return send(202, { id: "contract-run", state: "queued" });
+      if (path === "/v1/repositories/repo/operations/get/runs/contract-run" && record.method === "GET") return send(200, { id: "contract-run", state: "completed" });
+      if (path === "/v1/repositories/repo/operations/get/runs/contract-run/result" && record.method === "GET") return send(200, { runId: "contract-run", accepted: true, data: {}, checks: verification.checks });
       return send(404, { error: "not found" });
     });
   });
@@ -501,5 +514,22 @@ test("Browserbase account, connection, connect handoff, and disconnect commands 
     const json = capture();
     assert.equal(await main(["--json", "connections"], json.out), 0);
     assert.deepEqual(JSON.parse(json.lines[0]!), [{ id: "connection-1", accountId: "acct_demo", accountName: "Demo", environment: "production", state: "connected" }]);
+  });
+});
+
+test("contract listing, diff, retirement, and repository invocation commands use the shared APIs", async () => {
+  await withApi(async (_baseUrl, requests) => {
+    for (const args of [["models"], ["repos"], ["ops"], ["ops", "repo"], ["diff", "auto-1"], ["retire", "op-1"]] as string[][]) {
+      const result = capture();
+      assert.equal(await main(args, result.out), 0, args.join(" "));
+      assert.ok(result.lines.length > 0);
+    }
+    const invoked = capture();
+    assert.equal(await main([
+      "invoke", "--repo", "repo", "--method", "get", "--version", "1", "--input", "{\"memberId\":\"DEMO-1001\"}", "--follow"
+    ], invoked.out), 0);
+    assert.ok(invoked.lines.some((line) => line.includes("contract-run")));
+    const request = requests.find((item) => item.method === "POST" && item.url === "/v1/repositories/repo/operations/get/runs");
+    assert.equal(request?.contractVersion, "1");
   });
 });

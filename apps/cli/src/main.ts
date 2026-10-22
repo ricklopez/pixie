@@ -52,6 +52,11 @@ const HELP = `pixie — local developer CLI for the Pixie gateway (runs from thi
   pixie draft <id>                fork a published automation into a new draft
   pixie test <id> [--account <id>] [--input '<json>'] [--follow]
   pixie publish <id>              publish the tested definition
+  pixie models                    list published output models
+  pixie repos                     list published repositories
+  pixie ops [repo]                list declared repository operations
+  pixie diff <id>                 preview contract compatibility before publish
+  pixie retire <operationVersionId>
   pixie runs [--automation <id>]  list Studio runs
   pixie run <runId> [--events]    inspect a run and its timeline
   pixie cancel <runId>            cancel a queued or running Studio run
@@ -62,6 +67,7 @@ const HELP = `pixie — local developer CLI for the Pixie gateway (runs from thi
   pixie disconnect <connectionId>
   pixie invoke <id> --input '<json>' [--account <id>] [--revision <n>]
       [--idempotency-key <key>] [--follow]
+  pixie invoke --repo <r> --method <m> --version <major> --input '<json>' [--account <id>] [--follow]
   pixie openapi <id> [-o file]    retrieve the published OpenAPI document
   pixie export <id> [-o file]     retrieve the review export
   pixie mcp config [--client-token-env NAME]
@@ -784,10 +790,48 @@ export async function publish(project: Project, automationId: string, out: Out =
   const result = asObject(response.json);
   const revision = String(result?.revision ?? "");
   out.log(`published ${automationId} revision ${revision} (checksum ${String(result?.checksum ?? "")})`);
+  if (result?.compatibility) {
+    const model = asObject(result.modelVersion);
+    const operation = asObject(result.operationVersion);
+    const adapter = asObject(result.adapterRevision);
+    out.log(`contract ${String(result.repository)}.${String(result.method)} compatibility=${String(result.compatibility)}`);
+    out.log(`model v${String(model?.major)}.${String(model?.minor)} operation v${String(operation?.major)}.${String(operation?.minor)} adapter rev ${String(adapter?.revision)}`);
+  }
   out.log(`openapi: ${String(result?.openapiUrl ?? "")}`);
   out.log(
     `invoke as a client:\n  pixie invoke ${automationId} --revision ${revision} --account ${project.accountId} --input '{}' --follow`
   );
+  return 0;
+}
+
+async function contractList(project: Project, kind: "models" | "repositories" | "operations", repo: string | undefined, out: Out, jsonMode: boolean): Promise<number> {
+  const path = kind === "models" ? "/studio/models" : kind === "repositories" ? "/studio/repositories" : `/studio/operations${repo ? `?repo=${encodeURIComponent(repo)}` : ""}`;
+  const response = await studioRequest(project, "GET", path);
+  if (response.status !== 200 || !Array.isArray(response.json)) return reportApiError(out, kind, response, jsonMode);
+  if (jsonMode) return emitApiJson(out, response), 0;
+  for (const row of response.json) out.log(JSON.stringify(row));
+  if (!response.json.length) out.log(`no ${kind} found`);
+  return 0;
+}
+
+async function diffContract(project: Project, id: string, out: Out, jsonMode: boolean): Promise<number> {
+  const response = await studioRequest(project, "GET", `/studio/automations/${encodeURIComponent(id)}/contract`);
+  if (response.status !== 200) return reportApiError(out, "diff", response, jsonMode);
+  if (jsonMode) return emitApiJson(out, response), 0;
+  const value = asObject(response.json);
+  const diff = asObject(value?.compatibility);
+  const next = asObject(value?.next);
+  out.log(`${String(value?.repository)}.${String(value?.method)} compatibility=${String(diff?.level)} next=${String(next?.major)}.${String(next?.minor)} adapter=${String(next?.adapterRevision)}`);
+  if (Array.isArray(diff?.changes)) for (const change of diff.changes) out.log(JSON.stringify(change));
+  if (value?.error) out.error(String(value.error));
+  return 0;
+}
+
+async function retireOperation(project: Project, id: string, out: Out, jsonMode: boolean): Promise<number> {
+  const response = await studioRequest(project, "POST", `/studio/operations/${encodeURIComponent(id)}/retire`, {});
+  if (response.status !== 200) return reportApiError(out, "retire", response, jsonMode);
+  if (jsonMode) return emitApiJson(out, response), 0;
+  out.log(JSON.stringify(response.json, null, 2));
   return 0;
 }
 
@@ -1047,6 +1091,9 @@ export async function main(argv: string[], out: Out = stdio): Promise<number> {
     provider?: string;
     env?: string;
     environment?: string;
+    repo?: string;
+    method?: string;
+    version?: string;
   }
   let parsed: { values: CliOptions; positionals: string[] };
   try {
@@ -1074,6 +1121,9 @@ export async function main(argv: string[], out: Out = stdio): Promise<number> {
         provider: { type: "string" },
         env: { type: "string" },
         environment: { type: "string" },
+        repo: { type: "string" },
+        method: { type: "string" },
+        version: { type: "string" },
         ref: { type: "string" },
         revision: { type: "string" },
         role: { type: "string" },
@@ -1171,6 +1221,18 @@ export async function main(argv: string[], out: Out = stdio): Promise<number> {
       case "publish":
         if (!required(arg, "pixie publish <automationId>")) return 2;
         return publish(project, arg, out, jsonMode);
+      case "models":
+        return contractList(project, "models", undefined, out, jsonMode);
+      case "repos":
+        return contractList(project, "repositories", undefined, out, jsonMode);
+      case "ops":
+        return contractList(project, "operations", arg, out, jsonMode);
+      case "diff":
+        if (!required(arg, "pixie diff <automationId>")) return 2;
+        return diffContract(project, arg, out, jsonMode);
+      case "retire":
+        if (!required(arg, "pixie retire <operationVersionId>")) return 2;
+        return retireOperation(project, arg, out, jsonMode);
       case "runs":
         return runsList(project, out, values.automation, jsonMode);
       case "spend":
@@ -1191,6 +1253,33 @@ export async function main(argv: string[], out: Out = stdio): Promise<number> {
         if (!required(arg, "pixie cancel <runId>")) return 2;
         return cancelRun(project, out, arg, jsonMode);
       case "invoke": {
+        if (values.repo || values.method || values.version) {
+          if (arg || !values.repo || !values.method || !values.version || values.input === undefined) {
+            return usage(out, "pixie invoke --repo <r> --method <m> --version <major> --input '<json>' [--account <id>] [--follow]");
+          }
+          let contractInput: unknown;
+          try { contractInput = JSON.parse(values.input) as unknown; } catch { return usage(out, "pixie invoke --input must be valid JSON"); }
+          const version = Number(values.version);
+          if (!Number.isInteger(version) || version < 1) return usage(out, "pixie invoke --version must be a positive integer");
+          const started = await clientRequest(project, "POST", `/v1/repositories/${encodeURIComponent(values.repo)}/operations/${encodeURIComponent(values.method)}/runs`, {
+            accountId: values.account ?? project.accountId, input: contractInput
+          }, { "Pixie-Contract-Version": String(version), ...(values["idempotency-key"] ? { "idempotency-key": values["idempotency-key"] } : {}) });
+          if (started.status !== 200 && started.status !== 202) return reportApiError(out, "invoke", started, jsonMode);
+          if (!values.follow) { emitApiJson(out, started); return 0; }
+          const runId = String(asObject(started.json)?.id ?? "");
+          const basePath = `/v1/repositories/${encodeURIComponent(values.repo)}/operations/${encodeURIComponent(values.method)}/runs/${encodeURIComponent(runId)}`;
+          const deadline = Date.now() + 120_000;
+          let status = started;
+          while (!TERMINAL_RUN_STATES.has(String(asObject(status.json)?.state)) && Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 500));
+            status = await clientRequest(project, "GET", basePath);
+          }
+          const result = await clientRequest(project, "GET", `${basePath}/result`);
+          if (result.status !== 200) return reportApiError(out, "invoke", result, jsonMode);
+          if (jsonMode) emitApiJson(out, result);
+          else out.log(JSON.stringify(result.json, null, 2));
+          return 0;
+        }
         if (!required(arg, "pixie invoke <automationId> --input '<json>' [--account <id>] [--revision <n>] [--idempotency-key <key>] [--follow]")) return 2;
         if (values.input === undefined) return usage(out, "pixie invoke <automationId> --input '<json>' [--account <id>] [--revision <n>] [--idempotency-key <key>] [--follow]");
         let input: unknown;

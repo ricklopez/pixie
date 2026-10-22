@@ -24,6 +24,8 @@ const affordances: Affordance[] = [
 function base(id: string, name: string, origin: string): AutomationDefinition {
   return {
     ...newDefinition({ id, name, startUrl: `${origin}/`, allowedOrigins: [origin] }),
+    keyFields: ["tasks"],
+    adapterGenerator: "template",
     lists: { tasks },
     affordances,
     limits: { maxActions: 12, deadlineMs: 90_000 },
@@ -37,6 +39,7 @@ const observedAt = { name: "observedAt", type: "date" as const, required: true, 
 export function createTodoDefinition(origin = TODO_ORIGIN): AutomationDefinition {
   return {
     ...base("create-todo", "Create todo", origin),
+    method: "create",
     effect: "write",
     checkpoints: [
       {
@@ -81,6 +84,7 @@ export function listTodosDefinition(origin = TODO_ORIGIN): AutomationDefinition 
 export function updateTodoDefinition(origin = TODO_ORIGIN): AutomationDefinition {
   return {
     ...base("update-todo", "Update todo", origin),
+    method: "update",
     effect: "write",
     checkpoints: [
       {
@@ -124,6 +128,7 @@ export function updateTodoDefinition(origin = TODO_ORIGIN): AutomationDefinition
 export function deleteTodoDefinition(origin = TODO_ORIGIN): AutomationDefinition {
   return {
     ...base("delete-todo", "Delete todo", origin),
+    method: "delete",
     effect: "write",
     checkpoints: [
       {

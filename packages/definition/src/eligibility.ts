@@ -14,6 +14,8 @@ export function eligibilityOverviewDefinition(portalOrigin = "http://127.0.0.1:4
   });
   return {
     ...base,
+    keyFields: ["memberId"],
+    adapterGenerator: "template",
     checkpoints: [
       {
         id: "search-form",

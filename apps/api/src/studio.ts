@@ -24,6 +24,16 @@ import { ACCOUNT_ID_PATTERN, isValidAccountId } from "./browsers.js";
 import type { RunManager } from "./runs.js";
 import { runEvidence, runView } from "./views.js";
 import type { BrowserSessionLease, BrowserbaseProvider } from "./browser-provider.js";
+import {
+  contractTarget,
+  listModels,
+  listRepositories,
+  listRepositoryOperations,
+  persistContractPublication,
+  prepareContractPublication,
+  previewContract,
+  retireOperation
+} from "./contracts.js";
 
 export interface StudioContext {
   runs: RunManager;
@@ -275,10 +285,10 @@ export function registerStudioRoutes(app: FastifyInstance, ctx: StudioContext) {
       const template = req.body.template;
       const definition =
         template === "eligibility-overview"
-          ? { ...eligibilityOverviewDefinition(new URL(req.body.startUrl).origin), id, name: req.body.name }
+          ? { ...eligibilityOverviewDefinition(new URL(req.body.startUrl).origin), id, name: req.body.name, adapterGenerator: "template" as const }
           : template && (TODO_TEMPLATES as readonly string[]).includes(template)
-            ? { ...todoDefinition(template as TodoTemplate, new URL(req.body.startUrl).origin), id, name: req.body.name }
-            : newDefinition({ id, name: req.body.name, startUrl: req.body.startUrl, allowedOrigins: origins });
+            ? { ...todoDefinition(template as TodoTemplate, new URL(req.body.startUrl).origin), id, name: req.body.name, adapterGenerator: "template" as const }
+            : { ...newDefinition({ id, name: req.body.name, startUrl: req.body.startUrl, allowedOrigins: origins }), adapterGenerator: "manual" as const };
       const check = validateDefinition(definition, { allowLoopback: ctx.allowLoopback });
       if (!check.ok) {
         const blocking = check.issues.filter((i) => ["startUrl", "allowedOrigins", ...origins.map((_, k) => `allowedOrigins[${k}]`)].includes(i.path));
@@ -334,6 +344,7 @@ export function registerStudioRoutes(app: FastifyInstance, ctx: StudioContext) {
       );
       const definition = JSON.parse(row.definition) as AutomationDefinition;
       definition.sourceRecordingId = result.id;
+      definition.adapterGenerator = "recorded";
       setState(row.id, "configuring", { definition: JSON.stringify(definition), recording_id: result.id });
       return recordingView(result.id);
     });
@@ -401,7 +412,27 @@ export function registerStudioRoutes(app: FastifyInstance, ctx: StudioContext) {
       return reply.code(202).send(runView(created.run));
     });
 
-    // -- publish -----------------------------------------------------------------------------------------
+    // -- contracts and publish --------------------------------------------------------------------------
+    studio.get<{ Params: { id: string } }>("/studio/automations/:id/contract", async (req, reply) => {
+      const row = automation(req.params.id, req.principal.tenantId);
+      if (!row) return reply.code(404).send({ error: "not found" });
+      const definition = JSON.parse(row.definition) as AutomationDefinition;
+      return previewContract(db, req.principal.tenantId, definition);
+    });
+    studio.get("/studio/models", async (req) => listModels(db, req.principal.tenantId));
+    studio.get<{ Querystring: { repo?: string } }>("/studio/repositories", async (req) =>
+      req.query.repo
+        ? listRepositories(db, req.principal.tenantId).filter((repository) => repository.name === req.query.repo)
+        : listRepositories(db, req.principal.tenantId)
+    );
+    studio.get<{ Querystring: { repo?: string } }>("/studio/operations", async (req) =>
+      listRepositoryOperations(db, req.principal.tenantId, req.query.repo)
+    );
+    studio.post<{ Params: { id: string } }>("/studio/operations/:id/retire", async (req, reply) => {
+      const result = retireOperation(db, req.principal.tenantId, req.params.id, req.principal.name);
+      if (!result) return reply.code(404).send({ error: "not found" });
+      return { ...result, state: "retired" };
+    });
     studio.post<{ Params: { id: string } }>("/studio/automations/:id/publish", async (req, reply) => {
       const row = automation(req.params.id, req.principal.tenantId);
       if (!row) return reply.code(404).send({ error: "not found" });
@@ -411,18 +442,47 @@ export function registerStudioRoutes(app: FastifyInstance, ctx: StudioContext) {
       const definition = JSON.parse(row.definition) as AutomationDefinition;
       const checksum = await definitionChecksum(definition);
       const next = (db.prepare(`SELECT COALESCE(MAX(revision), 0) + 1 AS n FROM revisions WHERE automation_id = ?`).get(row.id) as { n: number }).n;
-      db.prepare(`INSERT INTO revisions (automation_id, revision, checksum, definition, published_at, published_by, test_run_id) VALUES (?, ?, ?, ?, ?, ?, ?)`).run(
-        row.id, next, checksum, JSON.stringify(definition), now(), req.principal.name, test.id
-      );
-      setState(row.id, "published");
-      return reply.code(201).send({ automationId: row.id, revision: next, checksum, openapiUrl: `${ctx.publicBaseUrl}/v1/automations/${row.id}/openapi.json` });
+      let contract;
+      try {
+        db.exec("BEGIN IMMEDIATE");
+        const target = contractTarget(definition);
+        db.prepare(`INSERT OR IGNORE INTO repositories (id, tenant_id, name) VALUES (?, ?, ?)`).run(randomUUID(), req.principal.tenantId, target.repository);
+        const repository = db.prepare(`SELECT id FROM repositories WHERE tenant_id = ? AND name = ?`).get(req.principal.tenantId, target.repository) as { id: string };
+        contract = prepareContractPublication(db, req.principal.tenantId, repository.id, row.id, next, definition, checksum);
+        db.prepare(`INSERT INTO revisions (automation_id, revision, checksum, definition, published_at, published_by, test_run_id) VALUES (?, ?, ?, ?, ?, ?, ?)`).run(
+          row.id, next, checksum, JSON.stringify(definition), now(), req.principal.name, test.id
+        );
+        persistContractPublication(db, contract);
+        setState(row.id, "published");
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        return reply.code(error instanceof Error && /keyFields/.test(error.message) ? 422 : 500).send({ error: error instanceof Error ? error.message : "contract publication failed" });
+      }
+      const operation = db.prepare(`SELECT major, minor, model_version_id FROM operation_versions WHERE id = ?`)
+        .get(contract.operationVersionId) as { major: number; minor: number; model_version_id: string };
+      return reply.code(201).send({
+        automationId: row.id,
+        revision: next,
+        checksum,
+        openapiUrl: `${ctx.publicBaseUrl}/v1/automations/${row.id}/openapi.json`,
+        compatibility: contract.compatibility.level,
+        changes: contract.compatibility.changes,
+        repository: contract.repository,
+        method: contract.method,
+        modelVersion: { id: operation.model_version_id, major: operation.major, minor: operation.minor },
+        operationVersion: { id: contract.operationVersionId, major: operation.major, minor: operation.minor },
+        adapterRevision: { id: contract.adapter.id, revision: contract.adapter.revision }
+      });
     });
     studio.post<{ Params: { id: string } }>("/studio/automations/:id/new-draft", async (req, reply) => {
       const row = automation(req.params.id, req.principal.tenantId);
       if (!row) return reply.code(404).send({ error: "not found" });
       if (row.state !== "published") return reply.code(409).send({ error: "only published automations can be forked into a new draft" });
       const id = `auto-${randomUUID().slice(0, 8)}`;
-      const definition = { ...(JSON.parse(row.definition) as AutomationDefinition), id, name: `${row.name} (draft)` };
+      const source = JSON.parse(row.definition) as AutomationDefinition;
+      const target = contractTarget(source);
+      const definition = { ...source, id, name: `${row.name} (draft)`, repository: target.repository, method: target.method };
       db.prepare(`INSERT INTO automations (id, tenant_id, name, state, definition, recording_id, created_at, updated_at) VALUES (?, ?, ?, 'configuring', ?, ?, ?, ?)`).run(
         id, req.principal.tenantId, definition.name, JSON.stringify(definition), row.recording_id, now(), now()
       );

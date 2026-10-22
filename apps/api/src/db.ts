@@ -32,6 +32,8 @@ export interface RunRow {
   tenant_id: string;
   automation_id: string;
   revision: number;
+  operation_version_id: string | null;
+  adapter_revision_id: string | null;
   account_id: string;
   connection_id: string | null;
   caller_id: string;
@@ -78,8 +80,48 @@ CREATE TABLE IF NOT EXISTS revisions (
   automation_id TEXT NOT NULL REFERENCES automations(id), revision INTEGER NOT NULL, checksum TEXT NOT NULL,
   definition TEXT NOT NULL, published_at TEXT NOT NULL, published_by TEXT NOT NULL, test_run_id TEXT,
   PRIMARY KEY (automation_id, revision));
+CREATE TABLE IF NOT EXISTS model_versions (
+  id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), name TEXT NOT NULL,
+  major INTEGER NOT NULL, minor INTEGER NOT NULL, schema_json TEXT NOT NULL, identity_fields TEXT NOT NULL, hash TEXT NOT NULL,
+  UNIQUE (tenant_id, name, major, minor));
+CREATE TABLE IF NOT EXISTS repositories (
+  id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), name TEXT NOT NULL,
+  UNIQUE (tenant_id, name));
+CREATE TABLE IF NOT EXISTS operation_versions (
+  id TEXT PRIMARY KEY, repository_id TEXT NOT NULL REFERENCES repositories(id), method TEXT NOT NULL,
+  major INTEGER NOT NULL, minor INTEGER NOT NULL, input_schema TEXT NOT NULL,
+  model_version_id TEXT NOT NULL REFERENCES model_versions(id), effect TEXT NOT NULL CHECK (effect IN ('read','write')),
+  checks TEXT NOT NULL, allowed_origins TEXT NOT NULL, connection_requirement TEXT NOT NULL,
+  limits TEXT NOT NULL, hash TEXT NOT NULL, UNIQUE (repository_id, method, major, minor));
+CREATE TABLE IF NOT EXISTS adapter_revisions (
+  id TEXT PRIMARY KEY, operation_version_id TEXT NOT NULL REFERENCES operation_versions(id), revision INTEGER NOT NULL,
+  definition_hash TEXT NOT NULL, engine TEXT NOT NULL, engine_revision TEXT NOT NULL,
+  generator TEXT NOT NULL CHECK (generator IN ('template','recorded','manual')),
+  automation_id TEXT NOT NULL REFERENCES automations(id), automation_revision INTEGER NOT NULL,
+  hash TEXT NOT NULL, UNIQUE (operation_version_id, revision));
+CREATE TABLE IF NOT EXISTS publication_bindings (
+  repository_id TEXT NOT NULL REFERENCES repositories(id), method TEXT NOT NULL, major INTEGER NOT NULL,
+  operation_version_id TEXT NOT NULL REFERENCES operation_versions(id),
+  adapter_revision_id TEXT NOT NULL REFERENCES adapter_revisions(id),
+  PRIMARY KEY (repository_id, method, major));
+CREATE TABLE IF NOT EXISTS retired_operations (
+  operation_version_id TEXT PRIMARY KEY REFERENCES operation_versions(id),
+  retired_at TEXT NOT NULL, retired_by TEXT NOT NULL);
+CREATE TRIGGER IF NOT EXISTS model_versions_no_update BEFORE UPDATE ON model_versions
+BEGIN SELECT RAISE(ABORT, 'published rows are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS model_versions_no_delete BEFORE DELETE ON model_versions
+BEGIN SELECT RAISE(ABORT, 'published rows are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS operation_versions_no_update BEFORE UPDATE ON operation_versions
+BEGIN SELECT RAISE(ABORT, 'published rows are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS operation_versions_no_delete BEFORE DELETE ON operation_versions
+BEGIN SELECT RAISE(ABORT, 'published rows are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS adapter_revisions_no_update BEFORE UPDATE ON adapter_revisions
+BEGIN SELECT RAISE(ABORT, 'published rows are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS adapter_revisions_no_delete BEFORE DELETE ON adapter_revisions
+BEGIN SELECT RAISE(ABORT, 'published rows are immutable'); END;
 CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, automation_id TEXT NOT NULL, revision INTEGER NOT NULL,
+  operation_version_id TEXT REFERENCES operation_versions(id), adapter_revision_id TEXT REFERENCES adapter_revisions(id),
   account_id TEXT NOT NULL, connection_id TEXT, caller_id TEXT NOT NULL, kind TEXT NOT NULL, state TEXT NOT NULL, input TEXT NOT NULL,
   idempotency_key TEXT, request_hash TEXT, result TEXT, failure TEXT, metrics TEXT,
   created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT);
@@ -103,6 +145,8 @@ export function openDatabase(path: string): DatabaseSync {
   ensureColumn(db, "accounts", "environment", "TEXT NOT NULL DEFAULT 'local'");
   ensureColumn(db, "accounts", "auth_required_signals", "TEXT NOT NULL DEFAULT '[]'");
   ensureColumn(db, "runs", "connection_id", "TEXT");
+  ensureColumn(db, "runs", "operation_version_id", "TEXT");
+  ensureColumn(db, "runs", "adapter_revision_id", "TEXT");
   ensureColumn(db, "spend_ledger", "browser_session_seconds", "INTEGER NOT NULL DEFAULT 0");
   return db;
 }

@@ -562,8 +562,28 @@ function TestTab({ automation, accounts, changed }: { automation: Automation; ac
 function PublishTab({ automation, changed }: { automation: Automation; changed: () => Promise<void> }) {
   const [error, setError] = useState<string | null>(null);
   const [exported, setExported] = useState<ReviewExport | null>(null);
+  const [contract, setContract] = useState<{
+    repository: string; method: string; identityFields: string[];
+    compatibility: { level: "major" | "minor" | "adapter"; changes: { path: string; kind: string }[] };
+    current: { major: number; minor: number; adapterRevision: number } | null;
+    next: { major: number; minor: number; adapterRevision: number };
+    error?: string;
+  } | null>(null);
+  useEffect(() => {
+    api<typeof contract>("GET", `/studio/automations/${automation.id}/contract`).then(setContract).catch(() => setContract(null));
+  }, [automation]);
   return (
     <>
+      <div className="panel">
+        <h2>Contract</h2>
+        {contract ? <>
+          <p><code>{contract.repository}.{contract.method}</code> · model <code>v{contract.next.major}.{contract.next.minor}</code> · operation <code>v{contract.next.major}.{contract.next.minor}</code> · adapter <code>rev {contract.next.adapterRevision}</code></p>
+          <p className="muted">Current: {contract.current ? `model/operation v${contract.current.major}.${contract.current.minor}, adapter rev ${contract.current.adapterRevision}` : "unpublished"}</p>
+          <p className="muted">Identity fields: {contract.identityFields.join(", ") || "not declared"} · compatibility: <strong>{contract.compatibility.level}</strong></p>
+          {contract.compatibility.changes.map((change, index) => <p className="muted" key={`${change.path}-${index}`}><code>{change.kind}</code> {change.path}</p>)}
+          {contract.error && <p className="error">{contract.error}</p>}
+        </> : <p className="muted">Loading contract preview…</p>}
+      </div>
       <div className="panel">
         <h2>Publish an immutable revision</h2>
         <p className="muted">
@@ -583,7 +603,7 @@ function PublishTab({ automation, changed }: { automation: Automation; changed: 
               }
             }}
           >
-            Publish revision {automation.revisions.length + 1}
+            Publish {contract?.compatibility.level ?? "contract"} · revision {automation.revisions.length + 1}
           </button>
           {automation.state === "published" && (
             <button

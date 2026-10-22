@@ -112,6 +112,51 @@ export function openApiDocument(automationId: string, name: string, revisions: R
   };
 }
 
+export function repositoryOpenApiDocument(repository: string, operations: {
+  method: string; major: number; minor: number; version: string; inputSchema: unknown; outputSchema: unknown
+}[], baseUrl: string) {
+  const paths: Record<string, unknown> = {};
+  for (const method of new Set(operations.map((operation) => operation.method))) {
+    const group = operations.filter((operation) => operation.method === method);
+    const base = `/v1/repositories/${encodeURIComponent(repository)}/operations/${encodeURIComponent(method)}`;
+    const inputSchemas = group.map((operation) => operation.inputSchema);
+    paths[`${base}/runs`] = {
+      post: {
+        operationId: `invoke_${repository}_${method}`,
+        summary: `Invoke ${repository}.${method}`,
+        parameters: [
+          { name: "Pixie-Contract-Version", in: "header", required: false, schema: { type: "integer", enum: group.map((operation) => operation.major) } },
+          { name: "version", in: "query", required: false, schema: { type: "integer", enum: group.map((operation) => operation.major) } },
+          { name: "Idempotency-Key", in: "header", required: false, schema: { type: "string" } }
+        ],
+        requestBody: { required: true, content: { "application/json": { schema: inputSchemas.length === 1 ? inputSchemas[0] : { oneOf: inputSchemas } } } },
+        responses: {
+          "200": { description: "Idempotent replay" },
+          "202": { description: "Run accepted" },
+          "404": { description: "Repository operation or account not found" },
+          "409": { description: "Idempotency conflict" },
+          "410": { description: "Operation retired" },
+          "422": { description: "Missing contract pin or invalid input" }
+        }
+      }
+    };
+    paths[`${base}/runs/{runId}`] = {
+      get: { operationId: `get_${repository}_${method}_run`, parameters: [runIdParam()], responses: { "200": { description: "Run status" }, "404": { description: "Run not found" } } }
+    };
+    paths[`${base}/runs/{runId}/result`] = {
+      get: { operationId: `get_${repository}_${method}_result`, parameters: [runIdParam()], responses: { "200": { description: "Accepted result" }, "202": { description: "Run pending" }, "404": { description: "Run not found" }, "409": { description: "Run ended without an accepted result" } } }
+    };
+  }
+  return {
+    openapi: "3.1.0",
+    info: { title: `${repository} repository operations`, version: "contract-major" },
+    servers: [{ url: baseUrl }],
+    security: [{ bearerAuth: [] }],
+    paths,
+    components: { securitySchemes: { bearerAuth: { type: "http", scheme: "bearer" } } }
+  };
+}
+
 function runIdParam() {
   return { name: "runId", in: "path", required: true, schema: { type: "string" } };
 }

@@ -151,6 +151,25 @@ pixie mcp call list_operations --args '{}'
 
 With the scripted local API running, exercise the end-to-end MCP flow using `scripts/e2e-mcp.sh`.
 
+### Versioned repository contracts
+
+Publishing also versions the output model, declared repository operation, and browser adapter independently.
+Compatible optional output additions increment the minor contract version; breaking output/input changes increment
+the major; implementation-only changes increment the adapter revision. Published contract records are immutable.
+
+```sh
+node apps/cli/bin/pixie.js models
+node apps/cli/bin/pixie.js repos
+node apps/cli/bin/pixie.js ops [repository]
+node apps/cli/bin/pixie.js diff <automation-id>
+node apps/cli/bin/pixie.js invoke --repo <repository> --method get --version 1 \
+  --account acct_demo --input '{"memberId":"DEMO-1001"}' --follow
+```
+
+Repository REST calls pin a major with `Pixie-Contract-Version` or `?version=<major>`. MCP `invoke` accepts
+`repository`, `method`, and `version` in place of `automationId`. Exercise v1, compatible, and breaking changes
+through the CLI with `scripts/e2e-contracts.sh`.
+
 
 Requires Node.js 24 (the workspace requires Node.js 22.13 or newer), Python 3, `uv`, and local Chrome.
 

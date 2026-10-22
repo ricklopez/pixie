@@ -57,7 +57,12 @@ export function buildApp(options: AppOptions): { app: FastifyInstance; runs: Run
     publicBaseUrl: options.publicBaseUrl,
     browserbaseProvider: options.browserbaseProvider
   });
-  registerV1Routes(app, { runs, publicBaseUrl: options.publicBaseUrl, sendEvidenceFile: studio.sendEvidenceFile });
+  registerV1Routes(app, {
+    runs,
+    publicBaseUrl: options.publicBaseUrl,
+    studioBaseUrl: options.studioBaseUrl,
+    sendEvidenceFile: studio.sendEvidenceFile
+  });
   registerMcpRoute(app, { runs, publicBaseUrl: options.publicBaseUrl, studioBaseUrl: options.studioBaseUrl ?? "http://127.0.0.1:5173" });
   return {
     app,

@@ -5,7 +5,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { z } from "zod";
 import { authenticate, type Principal } from "./auth.js";
 import type { OperationsContext } from "./operations.js";
-import { getRun, listOperations, startRun } from "./operations.js";
+import { getContractRun, getRun, listOperations, startContractRun, startRun } from "./operations.js";
 
 function toolResult(value: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(value) }] };
@@ -24,30 +24,44 @@ function createServer(ctx: OperationsContext, principal: Principal) {
   server.registerTool("invoke", {
     description: "Start a published operation and return a run handle without waiting for completion.",
     inputSchema: {
-      automationId: z.string().min(1),
+      automationId: z.string().min(1).optional(),
+      repository: z.string().min(1).optional(),
+      method: z.string().min(1).optional(),
+      version: z.number().int().positive().optional(),
       input: z.record(z.string(), z.unknown()),
       revision: z.number().int().positive().optional(),
       accountId: z.string().min(1).optional(),
       idempotencyKey: z.string().min(1).optional()
     }
-  }, async ({ automationId, input, revision, accountId, idempotencyKey }) => {
-    const started = await startRun(ctx, principal, { automationId, input, revision, accountId, idempotencyKey, defaultLatestRevision: true });
+  }, async ({ automationId, repository, method, version, input, revision, accountId, idempotencyKey }) => {
+    if (automationId && (repository || method || version !== undefined)) return toolError("provide either automationId or repository/method/version, not both");
+    if (!automationId && (!repository || !method || version === undefined)) return toolError("repository invocation requires repository, method, and version (contract major)");
+    const started = automationId
+      ? await startRun(ctx, principal, { automationId, input, revision, accountId, idempotencyKey, defaultLatestRevision: true })
+      : await startContractRun(ctx, principal, { repository: repository!, method: method!, version, input, accountId, idempotencyKey });
     if (started.status >= 400) return toolError(JSON.stringify(started.body));
-    const body = started.body as { id: string; state: string };
+    const body = started.body as { id: string; state: string; links?: { self?: string } };
     return toolResult({
       runId: body.id,
       state: body.state,
-      statusUrl: `${ctx.publicBaseUrl.replace(/\/+$/, "")}/v1/automations/${encodeURIComponent(automationId)}/runs/${encodeURIComponent(body.id)}`
+      statusUrl: body.links?.self ?? `${ctx.publicBaseUrl.replace(/\/+$/, "")}/v1/automations/${encodeURIComponent(automationId!)}/runs/${encodeURIComponent(body.id)}`
     });
   });
   server.registerTool("get_run", {
     description: "Read a published operation run, its accepted result, verification summary, or failure.",
     inputSchema: {
-      automationId: z.string().min(1),
+      automationId: z.string().min(1).optional(),
+      repository: z.string().min(1).optional(),
+      method: z.string().min(1).optional(),
+      version: z.number().int().positive().optional(),
       runId: z.string().min(1)
     }
-  }, async ({ automationId, runId }) => {
-    const result = getRun(ctx, principal, automationId, runId);
+  }, async ({ automationId, repository, method, runId }) => {
+    if (automationId && (repository || method)) return toolError("provide either automationId or repository/method, not both");
+    if (!automationId && (!repository || !method)) return toolError("get_run requires automationId or repository and method");
+    const result = automationId
+      ? getRun(ctx, principal, automationId, runId)
+      : getContractRun(ctx, principal, repository!, method!, runId);
     if (result.status === 404) return toolError("not found");
     return toolResult(result.body);
   });

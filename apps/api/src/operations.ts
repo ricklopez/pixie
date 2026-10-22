@@ -4,6 +4,7 @@ import type { Principal } from "./auth.js";
 import type { AutomationRow, RevisionRow } from "./db.js";
 import { isTerminal, type RunManager } from "./runs.js";
 import { runResult, runView } from "./views.js";
+import { listRepositoryOperations, operationBinding } from "./contracts.js";
 
 export interface OperationsContext {
   runs: RunManager;
@@ -20,10 +21,19 @@ export interface StartOperationParams {
   defaultLatestRevision?: boolean;
 }
 
+export interface StartContractOperationParams {
+  repository: string;
+  method: string;
+  version?: unknown;
+  accountId?: unknown;
+  input?: unknown;
+  idempotencyKey?: string | null;
+}
+
 export type OperationResponse = { status: number; body: Record<string, unknown> };
 
 export function listOperations(db: DatabaseSync, tenantId: string) {
-  return listPublishedAutomations(db, tenantId).map(({ row, revisions: publishedRevisions }) => {
+  const automations = listPublishedAutomations(db, tenantId).map(({ row, revisions: publishedRevisions }) => {
     const latest = publishedRevisions.at(-1)!;
     const definition = JSON.parse(latest.definition) as AutomationDefinition;
     return {
@@ -34,6 +44,21 @@ export function listOperations(db: DatabaseSync, tenantId: string) {
       outputSchema: outputJsonSchema(definition)
     };
   });
+  const contracts = listRepositoryOperations(db, tenantId).map((operation) => ({
+    id: operation.automationId,
+    operationVersionId: operation.operationVersionId,
+    name: `${operation.repository}.${operation.method}`,
+    repository: operation.repository,
+    method: operation.method,
+    version: operation.version,
+    major: operation.major,
+    minor: operation.minor,
+    latestRevision: operation.adapterRevision,
+    inputSchema: operation.inputSchema,
+    outputSchema: operation.outputSchema
+  }));
+  const versionedAutomations = new Set(contracts.map((operation) => operation.id));
+  return [...contracts, ...automations.filter((automation) => !versionedAutomations.has(automation.id))];
 }
 
 export function listPublishedAutomations(db: DatabaseSync, tenantId: string) {
@@ -84,6 +109,61 @@ export async function startRun(ctx: OperationsContext, principal: Principal, par
   return { status: created.reused ? 200 : 202, body: { ...runView(run), links } };
 }
 
+export async function startContractRun(
+  ctx: OperationsContext,
+  principal: Principal,
+  params: StartContractOperationParams
+): Promise<OperationResponse> {
+  const db = ctx.runs.db;
+  if (typeof params.version !== "number" || !Number.isInteger(params.version) || params.version < 1) {
+    return { status: 422, body: { error: "a contract major version is required in Pixie-Contract-Version or ?version=<major>" } };
+  }
+  const binding = operationBinding(db, principal.tenantId, params.repository, params.method, params.version);
+  if (!binding) return { status: 404, body: { error: "repository operation not found" } };
+  if (binding.retired) return { status: 410, body: { error: "repository operation is retired" } };
+  const definitionRow = db.prepare(`SELECT definition FROM revisions WHERE automation_id = ? AND revision = ?`)
+    .get(binding.automation_id, binding.automation_revision) as { definition: string } | undefined;
+  if (!definitionRow) return { status: 404, body: { error: "repository operation not found" } };
+  let accountId = params.accountId;
+  if (accountId === undefined) {
+    accountId = (db.prepare(`SELECT id FROM accounts WHERE tenant_id = ? ORDER BY id LIMIT 1`).get(principal.tenantId) as { id: string } | undefined)?.id;
+  }
+  if (typeof accountId !== "string" || !accountId) return { status: 400, body: { error: "'accountId' is required" } };
+  if (!db.prepare(`SELECT id FROM accounts WHERE id = ? AND tenant_id = ?`).get(accountId, principal.tenantId)) {
+    return { status: 404, body: { error: "account not found" } };
+  }
+  const created = await ctx.runs.create({
+    tenantId: principal.tenantId,
+    automationId: binding.automation_id,
+    revision: binding.automation_revision,
+    operationVersionId: binding.id,
+    adapterRevisionId: binding.adapter_revision_id,
+    definition: JSON.parse(definitionRow.definition) as AutomationDefinition,
+    accountId,
+    callerId: principal.keyId,
+    kind: "endpoint",
+    input: params.input,
+    idempotencyKey: params.idempotencyKey ?? null
+  });
+  if (!created.ok) {
+    const status = created.status === 400 ? 422 : created.status;
+    return { status, body: { error: created.error, ...(created.details ? { details: created.details } : {}) } };
+  }
+  const run = ctx.runs.get(created.run.id)!;
+  const base = `/v1/repositories/${encodeURIComponent(params.repository)}/operations/${encodeURIComponent(params.method)}/runs/${encodeURIComponent(run.id)}`;
+  return {
+    status: created.reused ? 200 : 202,
+    body: {
+      ...runView(run),
+      links: {
+        self: `${ctx.publicBaseUrl}${base}`,
+        result: `${ctx.publicBaseUrl}${base}/result`,
+        evidence: `${ctx.publicBaseUrl}/v1/automations/${encodeURIComponent(run.automation_id)}/runs/${encodeURIComponent(run.id)}/evidence`
+      }
+    }
+  };
+}
+
 export function getRun(ctx: OperationsContext, principal: Principal, automationId: string, runId: string): OperationResponse {
   const run = getScopedRun(ctx.runs, principal.tenantId, automationId, runId);
   if (!run) return { status: 404, body: { error: "run not found" } };
@@ -99,6 +179,46 @@ export function getRun(ctx: OperationsContext, principal: Principal, automationI
     body.message = "A human must sign in using the Pixie Studio handoff before invoking this operation again.";
   }
   return { status: isTerminal(run.state) ? 200 : 202, body };
+}
+
+export function getContractRun(ctx: OperationsContext, principal: Principal, repository: string, method: string, runId: string): OperationResponse {
+  const run = ctx.runs.get(runId);
+  if (!run || run.tenant_id !== principal.tenantId || run.kind !== "endpoint" || !run.operation_version_id) {
+    return { status: 404, body: { error: "run not found" } };
+  }
+  const ownsOperation = ctx.runs.db.prepare(`SELECT 1 FROM operation_versions ov JOIN repositories r ON r.id = ov.repository_id
+    WHERE ov.id = ? AND r.tenant_id = ? AND r.name = ? AND ov.method = ?`)
+    .get(run.operation_version_id, principal.tenantId, repository, method);
+  if (!ownsOperation) return { status: 404, body: { error: "run not found" } };
+  return getRun(ctx, principal, run.automation_id, runId);
+}
+
+export function getContractRunStatus(ctx: OperationsContext, principal: Principal, repository: string, method: string, runId: string): OperationResponse {
+  const scoped = getContractRun(ctx, principal, repository, method, runId);
+  if (scoped.status === 404) return scoped;
+  const run = ctx.runs.get(runId);
+  return run ? getRunStatus(ctx, principal, run.automation_id, runId) : { status: 404, body: { error: "run not found" } };
+}
+
+export function getContractRunResult(ctx: OperationsContext, principal: Principal, repository: string, method: string, runId: string): OperationResponse {
+  const status = getContractRun(ctx, principal, repository, method, runId);
+  if (status.status === 404) return status;
+  const run = ctx.runs.get(runId)!;
+  return getRunResult(ctx, principal, run.automation_id, runId);
+}
+
+export function getRunStatus(ctx: OperationsContext, principal: Principal, automationId: string, runId: string): OperationResponse {
+  const run = getScopedRun(ctx.runs, principal.tenantId, automationId, runId);
+  return run ? { status: 200, body: runView(run) } : { status: 404, body: { error: "run not found" } };
+}
+
+export function getRunResult(ctx: OperationsContext, principal: Principal, automationId: string, runId: string): OperationResponse {
+  const run = getScopedRun(ctx.runs, principal.tenantId, automationId, runId);
+  if (!run) return { status: 404, body: { error: "run not found" } };
+  if (!isTerminal(run.state)) return { status: 202, body: runView(run) };
+  const result = runResult(run);
+  if (!result) return { status: 409, body: { ...runView(run), error: `run ended in state '${run.state}' without an accepted result` } };
+  return { status: 200, body: result as unknown as Record<string, unknown> };
 }
 
 export function getScopedRun(runs: RunManager, tenantId: string, automationId: string, runId: string) {
