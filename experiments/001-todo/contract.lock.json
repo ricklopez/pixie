@@ -1,0 +1,13 @@
+{
+  "algorithm": "sha256",
+  "sha256": "c3ecb42f85b223e5af851946b5033ae124f931628ef4b0a664a8a9b8235606b6",
+  "files": [
+    "contract/create.schema.json",
+    "contract/delete.schema.json",
+    "contract/list.output.schema.json",
+    "contract/list.schema.json",
+    "contract/rename.schema.json",
+    "test/frozen/core.test.ts",
+    "test/frozen/repair.test.ts"
+  ]
+}
