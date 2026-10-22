@@ -9,7 +9,7 @@ a stable contract backed by explicit verification and a review path when the out
 > **Status: planning the rebuild; implementation has not started.** This repository contains direction and an
 > experiment plan, not a working framework. It builds on lessons from the
 > [Pixie prototype](https://github.com/ricklopezio/gateway/pull/2).
-> See the [v1 launch plan](docs/v1-plan.md) and [Experiment 001](docs/experiments/001-script-generation-and-reviewed-repair.md).
+> See the [complete v1 product specification](product/README.md), [v1 launch plan](docs/v1-plan.md) and [Experiment 001](docs/experiments/001-script-generation-and-reviewed-repair.md).
 
 ## Sites and demos
 
@@ -112,7 +112,7 @@ writes. It never blindly replays a whole script. Authentication handoff does not
 
 Human login/MFA, bounded session lifetimes, Stop, context revocation, and restart cleanup belong in v1. Automated
 MFA collection and unrestricted collaborative control do not. See the [v1 plan](docs/v1-plan.md) for acceptance gates
-and the authenticated supplier-portal demo. All of this remains proposed, not implemented.
+and the [first Lemonade end-to-end use case](product/v1-lemonade-use-case.md). All of this remains proposed, not implemented.
 
 ## Lessons from the prototype
 

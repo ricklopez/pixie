@@ -1,6 +1,8 @@
 # Pixie v1: verified APIs for authenticated browser workflows
 
 Status: proposed, planning only. No implementation, paid experiments, infrastructure provisioning, or merge is authorized.
+Detailed product baseline: [V1 app on paper](../product/README.md). It supersedes the synthetic-invoice launch scenario below with the Lemonade read-first acceptance case; Todo CRUD remains the safety suite.
+
 Owner: Rick Lopez. Devin reviews feasibility and sequencing only until Rick explicitly authorizes implementation.
 
 ## Promise and scope
@@ -167,7 +169,10 @@ release after completion, Stop, timeout, failed startup, and worker crash. Conte
 - Keep all uncertain-write reconciliation checks from Experiment 001. No model calls in ordinary execution or handoff.
 - Save sanitized evidence for every attempt; measure model calls, timings, and costs without invented metrics.
 
-## Launch demo: CLI to Developer Studio
+## Earlier illustrative demo: CLI to Developer Studio
+
+The following supplier example is retained as concept-demo context. The current launch journey and capability
+gates are specified in [the Lemonade use case](../product/v1-lemonade-use-case.md).
 
 Use a clearly labeled synthetic supplier portal with two accounts, invoice pagination, login expiry, and controlled
 layout variants. No patient data, real credentials, or payment execution.
