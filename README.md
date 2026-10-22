@@ -161,7 +161,50 @@ flow through the API and its separate client:
 scripts/e2e-flow.sh
 ```
 
+The CLI-only authoring flow creates and invokes a fresh synthetic eligibility
+automation through the CLI:
+
+```sh
+scripts/e2e-cli.sh
+```
+
 Stop the local services with Ctrl-C in the first terminal. If `uv` is missing,
 install it with the official installer at <https://docs.astral.sh/uv/>. If Chrome
 is not discovered automatically, set `GATEWAY_CHROME_PATH` in your shell to its
 executable path; do not put machine-specific paths in the repository.
+
+### Build an automation from the CLI
+
+With the local services running, create a synthetic eligibility automation and
+review its definition as a file before saving it back through the API:
+
+```sh
+node apps/cli/bin/pixie.js accounts
+node apps/cli/bin/pixie.js create "Eligibility overview" \
+  --url http://127.0.0.1:4174/demo-portal \
+  --template eligibility-overview
+# Copy the auto-… ID from the create output.
+node apps/cli/bin/pixie.js definition get <automation-id> -o eligibility.json
+# Edit eligibility.json if needed, then validate and save it through the API.
+node apps/cli/bin/pixie.js definition set <automation-id> eligibility.json
+node apps/cli/bin/pixie.js test <automation-id> \
+  --account acct_demo --input '{"memberId":"DEMO-1001"}' --follow
+node apps/cli/bin/pixie.js publish <automation-id>
+node apps/cli/bin/pixie.js invoke <automation-id> \
+  --account acct_demo --input '{"memberId":"DEMO-1002"}' \
+  --idempotency-key demo-member-1002 --follow
+node apps/cli/bin/pixie.js runs --automation <automation-id>
+```
+
+Use `--json` on API commands for JSON output. `pixie record <automation-id>`
+starts a recording and waits for Enter; perform the workflow in the dedicated
+API-owned browser window. Recording requires a visible browser, so start the
+app without `--headless`:
+
+```sh
+node apps/cli/bin/pixie.js dev --scripted --portal
+```
+
+The CLI does not drive the recording browser. `pixie keys create` displays a
+newly created token once; store it securely. Existing tokens and provider keys
+are never printed.

@@ -1,11 +1,13 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { TODO_TEMPLATES } from "@gateway/definition";
 import { resolveChromeExecutable } from "@gateway/recorder";
 
-/** Root of the gateway checkout this CLI was built in; `pixie dev`/`doctor` operate on that checkout. */
+/** Root of the Pixie checkout this CLI was built in; `pixie dev`/`doctor` operate on that checkout. */
 export const CHECKOUT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 export const ENGINE_REVISION = "1231850a0bf1a0c0341fe408ef1668dbbfdfac46";
 
@@ -15,13 +17,14 @@ export interface Project {
   portalOrigin: string;
   accountId: string;
   engine: "live" | "scripted";
+  clientToken?: string;
 }
 
 const DEFAULT_PROJECT: Project = {
   apiUrl: "http://127.0.0.1:4180",
   studioUrl: "http://127.0.0.1:5173",
-  portalOrigin: "https://todo.uiineed.com",
-  accountId: "acct_todo",
+  portalOrigin: "http://127.0.0.1:4174",
+  accountId: "acct_demo",
   engine: "live"
 };
 
@@ -31,18 +34,38 @@ const HELP = `pixie — local developer CLI for the Pixie gateway (runs from thi
   pixie doctor                    check Node, uv/worker, Chrome, model variable, build and running services
   pixie dev [--scripted] [--headless] [--portal]
                                   start the API (+ dedicated browsers) and Studio from this checkout
-  pixie list                      list this tenant's automations with state and published revisions
-  pixie test <automationId> [--account <id>] [--input '<json>']
-                                  run a Studio test run and print the verified result or failure
-  pixie publish <automationId>    publish the tested definition as the next immutable revision
+  pixie list                       list automations
+  pixie accounts [list]           list accounts; use \`accounts add\` to configure one
+  pixie accounts add --name <n> --origin <url> [--id <id>]
+  pixie accounts secret <id> --ref <name>
+  pixie create <name> --url <startUrl> [--template eligibility-overview|create-todo|list-todos|update-todo|delete-todo]
+      [--allowed-origin <origin>...]
+  pixie show <automationId>       show an automation and its definition
+  pixie record start <id> [--url] start recording in the API-owned browser
+  pixie record status <id>        show the active recording status
+  pixie record stop <id>          stop recording and summarize captured steps
+  pixie record <id>               start, wait for Enter, then stop the recording
+  pixie definition get <id> [-o file]
+  pixie definition set <id> <file>
+  pixie draft <id>                fork a published automation into a new draft
+  pixie test <id> [--account <id>] [--input '<json>'] [--follow]
+  pixie publish <id>              publish the tested definition
+  pixie runs [--automation <id>]  list Studio runs
+  pixie run <runId> [--events]    inspect a run and its timeline
+  pixie cancel <runId>            cancel a queued or running Studio run
+  pixie invoke <id> --input '<json>' [--account <id>] [--revision <n>]
+      [--idempotency-key <key>] [--follow]
+  pixie openapi <id> [-o file]    retrieve the published OpenAPI document
+  pixie export <id> [-o file]     retrieve the review export
+  pixie keys create <name> --role client|developer
+  pixie open [runId|automationId] print a Studio URL and open it when $BROWSER is set
 
-Not available as CLI commands (use Studio at the studioUrl instead): creating an automation, recording a
-workflow in the dedicated browser, reviewing inputs/outputs/checkpoints. \`pixie test\`/\`publish\` act on an
-automation you authored there.
-
-Settings come from ./pixie.json (see \`pixie init\`) and the environment: GATEWAY_DEV_TOKEN (Studio token,
-default dev-token-local), TYPESAFE_API_KEY (live Jev), GATEWAY_CHROME_PATH (Chrome location). Secrets are
-read from the environment only and are never written by pixie.`;
+Use \`--json\` on API commands to emit the API response as JSON. Studio commands require a
+developer key (GATEWAY_DEV_TOKEN); \`invoke\` uses the client key (GATEWAY_CLIENT_TOKEN).
+Both default to local demo tokens unless overridden by the project config/environment.
+Tokens and provider keys are never included in normal command output. \`keys create\` reveals
+the newly generated token once; copy it securely. Recording requires \`pixie dev\` with a
+visible browser (omit \`--headless\`).`;
 
 type Out = { log: (line: string) => void; error: (line: string) => void };
 const stdio: Out = { log: (l) => console.log(l), error: (l) => console.error(l) };
@@ -55,7 +78,7 @@ export function loadProject(cwd = process.cwd()): Project {
 
 // -- init -------------------------------------------------------------------------------------------------
 
-export function init(directory: string, out: Out = stdio): number {
+export function init(directory: string, out: Out = stdio, jsonMode = false): number {
   const target = resolve(directory);
   if (existsSync(target) && readdirSync(target).length > 0) {
     out.error(`refusing to initialise ${target}: directory exists and is not empty (pixie never overwrites a project)`);
@@ -81,14 +104,16 @@ export function init(directory: string, out: Out = stdio): number {
       "# Pixie project",
       "",
       "1. `pixie doctor` — verify Node, uv, Chrome and the model variable.",
-      "2. `pixie dev` — start the API and Studio from the gateway checkout.",
-      "3. Author an automation in Studio (create → record → review), then `pixie test <id>` and `pixie publish <id>`.",
+      "2. `pixie dev` — start the API and Studio from the Pixie checkout.",
+      "3. Build and review automations with `pixie create`, `pixie definition`, `pixie test`, and `pixie publish`.",
+      "4. Use `pixie record <id>` with a visible browser to capture a workflow.",
       "",
       `Settings live in pixie.json (account \`${DEFAULT_PROJECT.accountId}\`, portal ${DEFAULT_PROJECT.portalOrigin}); secrets only in your environment.`,
       ""
     ].join("\n")
   );
-  out.log(`created Pixie project in ${target} (pixie.json, .env.example, .gitignore, README.md)`);
+  if (jsonMode) out.log(JSON.stringify({ created: target, files: ["pixie.json", ".env.example", ".gitignore", "README.md"] }));
+  else out.log(`created Pixie project in ${target} (pixie.json, .env.example, .gitignore, README.md)`);
   return 0;
 }
 
@@ -148,8 +173,12 @@ export async function doctorChecks(project: Project, env: NodeJS.ProcessEnv = pr
   return checks;
 }
 
-export async function doctor(project: Project, out: Out = stdio): Promise<number> {
+export async function doctor(project: Project, out: Out = stdio, jsonMode = false): Promise<number> {
   const checks = await doctorChecks(project);
+  if (jsonMode) {
+    out.log(JSON.stringify(checks));
+    return checks.some((check) => !check.ok && check.level === "fail") ? 1 : 0;
+  }
   for (const c of checks) out.log(`${c.ok ? "ok  " : c.level === "fail" ? "FAIL" : "warn"}  ${c.name}: ${c.detail}`);
   const failed = checks.filter((c) => !c.ok && c.level === "fail");
   out.log(failed.length ? `${failed.length} problem(s) must be fixed before \`pixie dev\` will work` : "environment ready");
@@ -208,128 +237,839 @@ export async function dev(project: Project, flags: { scripted: boolean; headless
   });
 }
 
-// -- studio API commands ----------------------------------------------------------------------------------
+// -- Studio and client API commands -----------------------------------------------------------------------
 
-async function studioRequest(project: Project, method: string, path: string, body?: unknown) {
-  const token = process.env.GATEWAY_DEV_TOKEN ?? "dev-token-local";
-  const res = await fetch(`${project.apiUrl}${path}`, {
-    method,
-    headers: { authorization: `Bearer ${token}`, ...(body !== undefined ? { "content-type": "application/json" } : {}) },
-    ...(body !== undefined ? { body: JSON.stringify(body) } : {})
-  }).catch((error: Error) => {
-    throw new Error(`cannot reach the API at ${project.apiUrl} (${error.message}); start it with \`pixie dev\``);
-  });
-  const json = (await res.json().catch(() => null)) as Record<string, unknown> | null;
-  return { status: res.status, json };
+interface ApiResponse {
+  status: number;
+  json: unknown;
+  raw: string;
 }
 
 interface RunView {
   id: string;
+  automationId?: string;
   state: string;
-  failure?: { reason?: string } | null;
+  kind?: string;
+  revision?: number;
+  metrics?: Record<string, unknown> | null;
+  failure?: { reason?: string; reasons?: string[] } | null;
 }
 
 interface RunEvidence {
   run: RunView;
-  verification: { accepted: boolean; checks: { id: string; passed: boolean; detail?: string }[]; reasons: string[] } | null;
+  verification: { accepted: boolean; checks: { id: string; passed: boolean; detail?: string }[]; reasons?: string[] } | null;
   data: unknown;
   screenshots: unknown[];
+  timeline?: { seq: number; at: string; event: Record<string, unknown> & { type: string } }[];
 }
 
-export async function list(project: Project, out: Out = stdio): Promise<number> {
-  const { status, json } = await studioRequest(project, "GET", "/studio/automations");
-  if (status !== 200 || !Array.isArray(json)) {
-    out.error(`list failed: HTTP ${status} ${JSON.stringify(json)}`);
+const TERMINAL_RUN_STATES = new Set(["completed", "needs_review", "failed", "awaiting_auth", "cancelled"]);
+
+function asObject(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function tokenForStudio(): string {
+  return process.env.GATEWAY_DEV_TOKEN ?? "dev-token-local";
+}
+
+function tokenForClient(project: Project): string {
+  return process.env.GATEWAY_CLIENT_TOKEN ?? project.clientToken ?? "client-token-local";
+}
+
+async function apiRequest(
+  project: Project,
+  token: string,
+  method: string,
+  path: string,
+  body?: unknown,
+  extraHeaders: Record<string, string> = {}
+): Promise<ApiResponse> {
+  const url = `${project.apiUrl.replace(/\/+$/, "")}${path}`;
+  const res = await fetch(url, {
+    method,
+    headers: {
+      authorization: `Bearer ${token}`,
+      ...(body !== undefined ? { "content-type": "application/json" } : {}),
+      ...extraHeaders
+    },
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {})
+  }).catch((error: Error) => {
+    throw new Error(`cannot reach the API at ${project.apiUrl} (${error.message}); start it with \`pixie dev\``);
+  });
+  const raw = await res.text();
+  let json: unknown = null;
+  if (raw) {
+    try {
+      json = JSON.parse(raw) as unknown;
+    } catch {
+      json = raw;
+    }
+  }
+  return { status: res.status, json, raw };
+}
+
+function studioRequest(project: Project, method: string, path: string, body?: unknown): Promise<ApiResponse> {
+  return apiRequest(project, tokenForStudio(), method, path, body);
+}
+
+function clientRequest(project: Project, method: string, path: string, body?: unknown, headers: Record<string, string> = {}): Promise<ApiResponse> {
+  return apiRequest(project, tokenForClient(project), method, path, body, headers);
+}
+
+function apiErrorMessage(value: unknown): string {
+  const body = asObject(value);
+  if (typeof body?.error === "string") return body.error;
+  if (typeof value === "string") return value;
+  return JSON.stringify(value);
+}
+
+function reportApiError(out: Out, command: string, response: ApiResponse, jsonMode: boolean): number {
+  if (jsonMode) {
+    out.log(response.raw || "null");
     return 1;
   }
-  for (const a of json as { id: string; name: string; state: string; revisions?: { revision: number }[] }[]) {
-    out.log(`${a.id}  ${a.state.padEnd(11)}  revisions=${a.revisions?.length ?? 0}  ${a.name}`);
+  out.error(`pixie ${command}: HTTP ${response.status}: ${apiErrorMessage(response.json)}`);
+  const issues = asObject(response.json)?.issues;
+  if (Array.isArray(issues)) {
+    for (const issue of issues) {
+      const entry = asObject(issue);
+      if (entry) out.error(`  ${String(entry.path ?? "definition")}: ${String(entry.message ?? "invalid")}`);
+    }
   }
-  if (json.length === 0) out.log("no automations yet — create and record one in Studio");
+  return 1;
+}
+
+function emitApiJson(out: Out, response: ApiResponse): void {
+  out.log(response.raw || "null");
+}
+
+function emitObject(out: Out, value: unknown): void {
+  out.log(JSON.stringify(value, null, 2));
+}
+
+function printMetrics(out: Out, value: unknown): void {
+  const metrics = asObject(value);
+  if (!metrics) return;
+  const engine = String(metrics.engine ?? "");
+  const countLabel = engine.toLowerCase().includes("scripted") ? "scripted decisions" : "model calls";
+  out.log(
+    `${countLabel}=${String(metrics.modelCalls ?? "unknown")} engine=${engine || "unknown"} ` +
+      `actions=${String(metrics.actions ?? "unknown")} ` +
+      `elapsedMs=${String(metrics.elapsedMs ?? "unknown")}`
+  );
+}
+
+function printVerification(out: Out, value: RunEvidence["verification"]): void {
+  if (!value) {
+    out.log("verification: unavailable");
+    return;
+  }
+  const passed = value.checks.filter((check) => check.passed).length;
+  out.log(`verification: ${value.accepted ? "accepted" : "rejected"} (${passed}/${value.checks.length} checks passed)`);
+  for (const check of value.checks) out.log(`  ${check.passed ? "pass" : "FAIL"}  ${check.id}${check.detail ? ` ${check.detail}` : ""}`);
+  for (const reason of value.reasons ?? []) out.log(`  reason: ${reason}`);
+}
+
+function printRunEvidence(out: Out, project: Project, evidence: RunEvidence): void {
+  out.log(`state: ${evidence.run.state}`);
+  printVerification(out, evidence.verification);
+  printMetrics(out, evidence.run.metrics);
+  if (evidence.run.state === "completed") out.log(`data: ${JSON.stringify(evidence.data)}`);
+  if (evidence.run.failure?.reason) out.log(`failure: ${evidence.run.failure.reason}`);
+  out.log(`evidence: ${evidence.screenshots.length} screenshot(s); inspect at ${project.studioUrl}/#/runs/${evidence.run.id}`);
+}
+
+export async function list(project: Project, out: Out = stdio, jsonMode = false): Promise<number> {
+  const response = await studioRequest(project, "GET", "/studio/automations");
+  if (response.status !== 200 || !Array.isArray(response.json)) return reportApiError(out, "list", response, jsonMode);
+  if (jsonMode) {
+    emitApiJson(out, response);
+    return 0;
+  }
+  for (const item of response.json) {
+    const automation = asObject(item);
+    if (!automation) continue;
+    const revisions = Array.isArray(automation.revisions) ? automation.revisions.length : 0;
+    out.log(`${String(automation.id)}  ${String(automation.state ?? "").padEnd(11)}  revisions=${revisions}  ${String(automation.name)}`);
+  }
+  if (response.json.length === 0) out.log("no automations yet — create one with `pixie create`");
   return 0;
 }
 
-export async function testRun(project: Project, automationId: string, accountId: string, input: unknown, out: Out = stdio): Promise<number> {
-  const started = await studioRequest(project, "POST", `/studio/automations/${automationId}/test`, { accountId, input });
-  if (started.status !== 202) {
-    out.error(`test not started: HTTP ${started.status} ${JSON.stringify(started.json)}`);
-    return 1;
+async function accountsList(project: Project, out: Out, jsonMode: boolean): Promise<number> {
+  const response = await studioRequest(project, "GET", "/studio/accounts");
+  if (response.status !== 200 || !Array.isArray(response.json)) return reportApiError(out, "accounts", response, jsonMode);
+  if (jsonMode) {
+    emitApiJson(out, response);
+    return 0;
   }
-  const runId = (started.json as { id: string }).id;
-  out.log(`test run ${runId} queued for account ${accountId}; waiting…`);
-  const terminal = new Set(["completed", "needs_review", "failed", "awaiting_auth", "cancelled"]);
-  let evidence: RunEvidence | null = null;
-  while (!evidence || !terminal.has(evidence.run.state)) {
-    await new Promise((r) => setTimeout(r, 1000));
-    const poll = await studioRequest(project, "GET", `/studio/runs/${runId}`);
-    if (poll.status !== 200) {
-      out.error(`lost the run: HTTP ${poll.status}`);
-      return 1;
-    }
-    evidence = poll.json as unknown as RunEvidence;
+  out.log("ID  NAME  ORIGIN");
+  for (const item of response.json) {
+    const account = asObject(item);
+    if (account) out.log(`${String(account.id)}  ${String(account.name)}  ${String(account.portalOrigin)}`);
   }
-  const { run, verification } = evidence;
-  out.log(`state: ${run.state}`);
-  for (const c of verification?.checks ?? []) out.log(`  ${c.passed ? "pass" : "FAIL"}  ${c.id} ${c.detail ?? ""}`.trimEnd());
-  if (run.state === "completed") out.log(`data: ${JSON.stringify(evidence.data)}`);
-  if (run.failure?.reason) out.log(`failure: ${run.failure.reason}`);
-  out.log(`evidence: ${evidence.screenshots.length} screenshot(s); inspect at ${project.studioUrl}/#/runs/${runId}`);
-  return run.state === "completed" ? 0 : 1;
+  if (response.json.length === 0) out.log("no accounts configured");
+  return 0;
 }
 
-export async function publish(project: Project, automationId: string, out: Out = stdio): Promise<number> {
-  const { status, json } = await studioRequest(project, "POST", `/studio/automations/${automationId}/publish`, {});
-  if (status !== 201 || !json) {
-    out.error(`publish refused: HTTP ${status} ${JSON.stringify(json)}`);
+async function accountAdd(project: Project, out: Out, name: string, origin: string, id: string | undefined, jsonMode: boolean): Promise<number> {
+  const response = await studioRequest(project, "POST", "/studio/accounts", { name, portalOrigin: origin, ...(id ? { id } : {}) });
+  if (response.status !== 201) return reportApiError(out, "accounts add", response, jsonMode);
+  if (jsonMode) emitApiJson(out, response);
+  else out.log(`created account ${String(asObject(response.json)?.id ?? "")}`);
+  return 0;
+}
+
+async function readSecret(): Promise<string> {
+  if (!process.stdin.isTTY || typeof process.stdin.setRawMode !== "function") {
+    const chunks: Buffer[] = [];
+    for await (const chunk of process.stdin) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    return Buffer.concat(chunks).toString("utf8").replace(/\r?\n$/, "");
+  }
+  const input = process.stdin;
+  return new Promise<string>((resolveSecret, rejectSecret) => {
+    let value = "";
+    const previousRaw = input.isRaw;
+    const finish = (error?: Error) => {
+      input.removeListener("data", onData);
+      input.setRawMode(Boolean(previousRaw));
+      input.pause();
+      process.stderr.write("\n");
+      if (error) rejectSecret(error);
+      else resolveSecret(value);
+    };
+    const onData = (chunk: Buffer) => {
+      for (const byte of chunk) {
+        if (byte === 3) return finish(new Error("secret input cancelled"));
+        if (byte === 10 || byte === 13) return finish();
+        if (byte === 8 || byte === 127) value = value.slice(0, -1);
+        else if (byte >= 32) value += String.fromCharCode(byte);
+      }
+    };
+    process.stderr.write("Secret value (input is hidden): ");
+    input.setRawMode(true);
+    input.resume();
+    input.on("data", onData);
+  });
+}
+
+async function accountSecret(project: Project, out: Out, id: string, ref: string, jsonMode: boolean): Promise<number> {
+  const value = await readSecret();
+  const response = await studioRequest(project, "PUT", `/studio/accounts/${encodeURIComponent(id)}/secrets`, { [ref]: value });
+  if (response.status !== 200) return reportApiError(out, "accounts secret", response, jsonMode);
+  if (jsonMode) emitApiJson(out, response);
+  else out.log(`stored account secret reference '${ref}' for ${id} (value not displayed)`);
+  return 0;
+}
+
+async function createAutomation(
+  project: Project,
+  out: Out,
+  name: string,
+  startUrl: string,
+  template: string | undefined,
+  allowedOrigins: string[] | undefined,
+  jsonMode: boolean
+): Promise<number> {
+  if (template && template !== "eligibility-overview" && !(TODO_TEMPLATES as readonly string[]).includes(template)) {
+    out.error(`pixie create: unsupported template '${template}' (use eligibility-overview or ${TODO_TEMPLATES.join(", ")})`);
+    return 2;
+  }
+  const response = await studioRequest(project, "POST", "/studio/automations", {
+    name,
+    startUrl,
+    ...(template ? { template } : {}),
+    ...(allowedOrigins?.length ? { allowedOrigins } : {})
+  });
+  if (response.status !== 201) return reportApiError(out, "create", response, jsonMode);
+  if (jsonMode) emitApiJson(out, response);
+  else {
+    const automation = asObject(response.json);
+    out.log(`created ${String(automation?.id ?? "")} (${String(automation?.state ?? "draft")})`);
+    out.log(`review its definition with \`pixie definition get ${String(automation?.id ?? "")}\``);
+  }
+  return 0;
+}
+
+async function showAutomation(project: Project, out: Out, id: string, jsonMode: boolean): Promise<number> {
+  const response = await studioRequest(project, "GET", `/studio/automations/${encodeURIComponent(id)}`);
+  if (response.status !== 200) return reportApiError(out, "show", response, jsonMode);
+  if (jsonMode) emitApiJson(out, response);
+  else {
+    const automation = asObject(response.json);
+    out.log(`${String(automation?.name ?? "")}  ${String(automation?.id ?? id)}  state=${String(automation?.state ?? "unknown")}`);
+    out.log(`definition:`);
+    emitObject(out, automation?.definition ?? null);
+    out.log(`published revisions: ${Array.isArray(automation?.revisions) ? automation.revisions.length : 0}`);
+  }
+  return 0;
+}
+
+function recordingSummary(value: unknown, out: Out): void {
+  const recording = asObject(value);
+  const events = Array.isArray(recording?.events) ? recording.events : [];
+  const warnings = Array.isArray(recording?.warnings) ? recording.warnings : [];
+  const suggestion = asObject(recording?.suggestion);
+  out.log(`recording ${String(recording?.id ?? "")}: ${String(recording?.actionCount ?? events.length)} captured action(s)`);
+  for (const event of events) {
+    const entry = asObject(event);
+    if (!entry) continue;
+    const target = asObject(entry.target);
+    out.log(`  ${String(entry.seq ?? "?")} ${String(entry.kind ?? "step")}${target?.label ? ` — ${String(target.label)}` : ""}`);
+  }
+  for (const warning of warnings) {
+    const entry = asObject(warning);
+    if (entry) out.log(`  warning: ${String(entry.message ?? entry.code ?? "recording warning")}`);
+  }
+  if (suggestion) {
+    out.log(
+      `suggestion: ${Array.isArray(suggestion.checkpoints) ? suggestion.checkpoints.length : 0} checkpoint(s), ` +
+        `${Array.isArray(suggestion.inputs) ? suggestion.inputs.length : 0} input(s), ` +
+        `${Array.isArray(suggestion.unbound) ? suggestion.unbound.length : 0} unbound event(s)`
+    );
+  }
+}
+
+async function recordRequest(
+  project: Project,
+  out: Out,
+  id: string,
+  action: "start" | "status" | "stop",
+  startUrl: string | undefined,
+  jsonMode: boolean
+): Promise<{ code: number; json: unknown }> {
+  const root = `/studio/automations/${encodeURIComponent(id)}/recording`;
+  const response =
+    action === "start"
+      ? await studioRequest(project, "POST", `${root}/start`, startUrl ? { startUrl } : {})
+      : action === "status"
+        ? await studioRequest(project, "GET", `${root}/status`)
+        : await studioRequest(project, "POST", `${root}/stop`, {});
+  const expected = action === "start" ? 201 : 200;
+  if (response.status !== expected) return { code: reportApiError(out, `record ${action}`, response, jsonMode), json: response.json };
+  if (jsonMode) emitApiJson(out, response);
+  else if (action === "status") emitObject(out, response.json);
+  else if (action === "stop") recordingSummary(response.json, out);
+  else {
+    const status = asObject(response.json);
+    out.log(`recording started for ${id} (session ${String(status?.id ?? "")})`);
+  }
+  return { code: 0, json: response.json };
+}
+
+async function waitForEnter(): Promise<void> {
+  await new Promise<void>((resolvePromise) => {
+    const readline = createInterface({ input: process.stdin, output: process.stderr });
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      process.removeListener("SIGINT", onInterrupt);
+      readline.close();
+      resolvePromise();
+    };
+    const onInterrupt = () => {
+      process.stderr.write("\n");
+      finish();
+    };
+    process.once("SIGINT", onInterrupt);
+    readline.once("line", finish);
+    readline.once("close", finish);
+    process.stderr.write("Press Enter to stop recording (Ctrl-C also stops): ");
+  });
+}
+
+async function recordInteractive(project: Project, out: Out, id: string, startUrl: string | undefined, jsonMode: boolean): Promise<number> {
+  const started = await recordRequest(project, out, id, "start", startUrl, jsonMode);
+  if (started.code !== 0) return started.code;
+  out.error("Perform the workflow in the API-owned visible browser window; Pixie CLI does not drive the browser.");
+  await waitForEnter();
+  return (await recordRequest(project, out, id, "stop", undefined, jsonMode)).code;
+}
+
+async function definitionGet(project: Project, out: Out, id: string, output: string | undefined, jsonMode: boolean): Promise<number> {
+  const response = await studioRequest(project, "GET", `/studio/automations/${encodeURIComponent(id)}`);
+  if (response.status !== 200) return reportApiError(out, "definition get", response, jsonMode);
+  const definition = asObject(response.json)?.definition;
+  if (!definition) {
+    out.error(`pixie definition get: API response for ${id} did not include a definition`);
     return 1;
   }
-  const { revision, checksum, openapiUrl } = json as { revision: number; checksum: string; openapiUrl: string };
-  out.log(`published ${automationId} revision ${revision} (checksum ${checksum})`);
-  out.log(`openapi: ${openapiUrl}`);
-  out.log(`invoke as a client:\n  curl -X POST ${project.apiUrl}/v1/automations/${automationId}/runs -H "Authorization: Bearer $GATEWAY_CLIENT_TOKEN" -H "Content-Type: application/json" -H "Idempotency-Key: $(uuidgen)" -d '{"revision":${revision},"accountId":"${project.accountId}","input":{}}'`);
+  if (output) writeFileSync(resolve(output), `${JSON.stringify(definition, null, 2)}\n`);
+  if (jsonMode) out.log(JSON.stringify(definition));
+  else if (output) out.log(`wrote definition to ${resolve(output)}`);
+  else emitObject(out, definition);
+  return 0;
+}
+
+async function definitionSet(project: Project, out: Out, id: string, filename: string, jsonMode: boolean): Promise<number> {
+  let definition: unknown;
+  try {
+    definition = JSON.parse(readFileSync(resolve(filename), "utf8")) as unknown;
+  } catch (error) {
+    out.error(`pixie definition set: cannot read definition file ${filename}: ${(error as Error).message}`);
+    return 1;
+  }
+  const response = await studioRequest(project, "PUT", `/studio/automations/${encodeURIComponent(id)}/definition`, definition);
+  if (response.status !== 200) return reportApiError(out, "definition set", response, jsonMode);
+  if (jsonMode) emitApiJson(out, response);
+  else {
+    const automation = asObject(response.json);
+    out.log(`updated definition for ${id}; state=${String(automation?.state ?? "configuring")}`);
+    if (typeof automation?.checksum === "string") out.log(`checksum: ${automation.checksum}`);
+  }
+  return 0;
+}
+
+async function draft(project: Project, out: Out, id: string, jsonMode: boolean): Promise<number> {
+  const response = await studioRequest(project, "POST", `/studio/automations/${encodeURIComponent(id)}/new-draft`, {});
+  if (response.status !== 201) return reportApiError(out, "draft", response, jsonMode);
+  if (jsonMode) emitApiJson(out, response);
+  else out.log(`created draft ${String(asObject(response.json)?.id ?? "")}`);
+  return 0;
+}
+
+export async function testRun(
+  project: Project,
+  automationId: string,
+  accountId: string,
+  input: unknown,
+  out: Out = stdio,
+  follow = false,
+  jsonMode = false
+): Promise<number> {
+  const started = await studioRequest(project, "POST", `/studio/automations/${encodeURIComponent(automationId)}/test`, { accountId, input });
+  if (started.status !== 202) return reportApiError(out, "test", started, jsonMode);
+  const runId = String(asObject(started.json)?.id ?? "");
+  if (!follow) {
+    if (jsonMode) emitApiJson(out, started);
+    else out.log(`test run ${runId} queued for account ${accountId}; use \`pixie run ${runId}\` to inspect it`);
+    return 0;
+  }
+  if (!jsonMode) out.log(`test run ${runId} queued for account ${accountId}; waiting…`);
+  const deadline = Date.now() + 120_000;
+  let response: ApiResponse;
+  let evidence: RunEvidence | null = null;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 500));
+    response = await studioRequest(project, "GET", `/studio/runs/${encodeURIComponent(runId)}`);
+    if (response.status !== 200) return reportApiError(out, "test", response, jsonMode);
+    evidence = response.json as RunEvidence;
+    if (TERMINAL_RUN_STATES.has(evidence.run.state)) {
+      if (jsonMode) emitApiJson(out, response);
+      else printRunEvidence(out, project, evidence);
+      return evidence.run.state === "completed" && evidence.verification?.accepted === true ? 0 : 1;
+    }
+  }
+  out.error(`pixie test: timed out waiting for run ${runId}`);
+  return 1;
+}
+
+export async function publish(project: Project, automationId: string, out: Out = stdio, jsonMode = false): Promise<number> {
+  const response = await studioRequest(project, "POST", `/studio/automations/${encodeURIComponent(automationId)}/publish`, {});
+  if (response.status !== 201) return reportApiError(out, "publish", response, jsonMode);
+  if (jsonMode) {
+    emitApiJson(out, response);
+    return 0;
+  }
+  const result = asObject(response.json);
+  const revision = String(result?.revision ?? "");
+  out.log(`published ${automationId} revision ${revision} (checksum ${String(result?.checksum ?? "")})`);
+  out.log(`openapi: ${String(result?.openapiUrl ?? "")}`);
+  out.log(
+    `invoke as a client:\n  pixie invoke ${automationId} --revision ${revision} --account ${project.accountId} --input '{}' --follow`
+  );
+  return 0;
+}
+
+async function runsList(project: Project, out: Out, automationId: string | undefined, jsonMode: boolean): Promise<number> {
+  const query = automationId ? `?automationId=${encodeURIComponent(automationId)}` : "";
+  const response = await studioRequest(project, "GET", `/studio/runs${query}`);
+  if (response.status !== 200 || !Array.isArray(response.json)) return reportApiError(out, "runs", response, jsonMode);
+  if (jsonMode) {
+    emitApiJson(out, response);
+    return 0;
+  }
+  out.log("RUN ID  AUTOMATION  STATE  KIND  REVISION");
+  for (const item of response.json) {
+    const run = asObject(item);
+    if (run) out.log(`${String(run.id)}  ${String(run.automationId)}  ${String(run.state)}  ${String(run.kind)}  ${String(run.revision)}`);
+  }
+  if (response.json.length === 0) out.log("no runs found");
+  return 0;
+}
+
+async function showRun(project: Project, out: Out, runId: string, events: boolean, jsonMode: boolean): Promise<number> {
+  const response = await studioRequest(project, "GET", `/studio/runs/${encodeURIComponent(runId)}`);
+  if (response.status !== 200) return reportApiError(out, "run", response, jsonMode);
+  if (jsonMode) {
+    emitApiJson(out, response);
+    return 0;
+  }
+  const evidence = response.json as RunEvidence;
+  out.log(`run ${evidence.run.id}  automation=${String(evidence.run.automationId ?? "")}  state=${evidence.run.state}`);
+  printVerification(out, evidence.verification);
+  printMetrics(out, evidence.run.metrics);
+  if (evidence.run.failure?.reason) out.log(`failure: ${evidence.run.failure.reason}`);
+  if (events) {
+    for (const item of evidence.timeline ?? []) out.log(`${item.seq} ${item.at} ${item.event.type} ${JSON.stringify(item.event)}`);
+  } else {
+    out.log(`inspect the full timeline with \`pixie run ${runId} --events\``);
+  }
+  return 0;
+}
+
+async function cancelRun(project: Project, out: Out, runId: string, jsonMode: boolean): Promise<number> {
+  const response = await studioRequest(project, "POST", `/studio/runs/${encodeURIComponent(runId)}/cancel`, {});
+  if (response.status !== 202 && response.status !== 409) return reportApiError(out, "cancel", response, jsonMode);
+  if (jsonMode) emitApiJson(out, response);
+  else {
+    const result = asObject(response.json);
+    out.log(`cancel ${runId}: ${String(result?.ok === true ? "accepted" : result?.error ?? "not cancelled")}`);
+  }
+  return response.status === 202 ? 0 : 1;
+}
+
+async function latestRevision(project: Project, automationId: string): Promise<{ revision: number } | null> {
+  const response = await clientRequest(project, "GET", "/v1/automations");
+  if (response.status !== 200 || !Array.isArray(response.json)) return null;
+  const automation = response.json.map(asObject).find((item) => item?.id === automationId);
+  const revisions = automation && Array.isArray(automation.revisions) ? automation.revisions : [];
+  const latest = revisions.at(-1);
+  const revision = Number(asObject(latest)?.revision);
+  return Number.isInteger(revision) && revision > 0 ? { revision } : null;
+}
+
+async function invoke(
+  project: Project,
+  out: Out,
+  automationId: string,
+  input: unknown,
+  accountId: string,
+  requestedRevision: string | undefined,
+  idempotencyKey: string | undefined,
+  follow: boolean,
+  jsonMode: boolean
+): Promise<number> {
+  let revision: number;
+  if (requestedRevision !== undefined) {
+    revision = Number(requestedRevision);
+    if (!Number.isInteger(revision) || revision < 1) {
+      out.error("pixie invoke: --revision must be a positive integer");
+      return 2;
+    }
+  } else {
+    const latest = await latestRevision(project, automationId);
+    if (!latest) {
+      out.error(`pixie invoke: automation ${automationId} is not published or is unavailable to this client key`);
+      return 1;
+    }
+    revision = latest.revision;
+  }
+  const headers: Record<string, string> = idempotencyKey ? { "idempotency-key": idempotencyKey } : {};
+  const started = await clientRequest(
+    project,
+    "POST",
+    `/v1/automations/${encodeURIComponent(automationId)}/runs`,
+    { revision, accountId, input },
+    headers
+  );
+  if (started.status !== 202 && started.status !== 200) return reportApiError(out, "invoke", started, jsonMode);
+  const runId = String(asObject(started.json)?.id ?? "");
+  if (!follow) {
+    if (jsonMode) emitApiJson(out, started);
+    else out.log(`run ${runId} ${started.status === 200 ? "reused" : "queued"} (state=${String(asObject(started.json)?.state ?? "unknown")})`);
+    return 0;
+  }
+  const deadline = Date.now() + 120_000;
+  let runStatus: ApiResponse = started;
+  let run = asObject(started.json);
+  while (!TERMINAL_RUN_STATES.has(String(run?.state)) && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 500));
+    runStatus = await clientRequest(
+      project,
+      "GET",
+      `/v1/automations/${encodeURIComponent(automationId)}/runs/${encodeURIComponent(runId)}`
+    );
+    if (runStatus.status !== 200) return reportApiError(out, "invoke", runStatus, jsonMode);
+    run = asObject(runStatus.json);
+  }
+  if (!TERMINAL_RUN_STATES.has(String(run?.state))) {
+    out.error(`pixie invoke: timed out waiting for run ${runId}`);
+    return 1;
+  }
+  const result = await clientRequest(
+    project,
+    "GET",
+    `/v1/automations/${encodeURIComponent(automationId)}/runs/${encodeURIComponent(runId)}/result`
+  );
+  if (jsonMode) {
+    if (result.status === 200) emitApiJson(out, result);
+    else return reportApiError(out, "invoke", result, true);
+    return 0;
+  }
+  out.log(`run ${runId} ${started.status === 200 ? "reused" : "started"}; state=${String(run?.state)}`);
+  printMetrics(out, asObject(runStatus.json)?.metrics);
+  if (result.status !== 200) return reportApiError(out, "invoke", result, false);
+  const value = asObject(result.json);
+  const checks = Array.isArray(value?.checks) ? value.checks : [];
+  const passed = checks.filter((item) => asObject(item)?.passed === true).length;
+  out.log(`verification: ${value?.accepted === true ? "accepted" : "rejected"} (${passed}/${checks.length} checks passed)`);
+  out.log(`data: ${JSON.stringify(value?.data ?? null)}`);
+  return value?.accepted === true ? 0 : 1;
+}
+
+function outputDocument(out: Out, value: unknown, filename: string | undefined, jsonMode: boolean): void {
+  if (filename) writeFileSync(resolve(filename), `${JSON.stringify(value, null, 2)}\n`);
+  if (jsonMode) out.log(JSON.stringify(value));
+  else if (filename) out.log(`wrote ${resolve(filename)}`);
+  else emitObject(out, value);
+}
+
+async function documentRequest(
+  project: Project,
+  out: Out,
+  command: "openapi" | "export",
+  id: string,
+  filename: string | undefined,
+  jsonMode: boolean
+): Promise<number> {
+  const path = command === "openapi" ? `/studio/automations/${encodeURIComponent(id)}/openapi.json` : `/studio/automations/${encodeURIComponent(id)}/export`;
+  const response = await studioRequest(project, "GET", path);
+  if (response.status !== 200) return reportApiError(out, command, response, jsonMode);
+  outputDocument(out, response.json, filename, jsonMode);
+  return 0;
+}
+
+async function createKey(project: Project, out: Out, name: string, role: "client" | "developer", jsonMode: boolean): Promise<number> {
+  const response = await studioRequest(project, "POST", "/studio/api-keys", { name, role });
+  if (response.status !== 201) return reportApiError(out, "keys create", response, jsonMode);
+  out.error("WARNING: this newly created API token is shown once. Copy it to a secure secret store; it cannot be retrieved later.");
+  if (jsonMode) {
+    emitApiJson(out, response);
+    return 0;
+  }
+  const key = asObject(response.json);
+  out.log(`created ${role} key ${String(key?.id ?? "")}`);
+  if (typeof key?.token === "string") out.log(`token: ${key.token}`);
+  return 0;
+}
+
+async function openStudio(project: Project, out: Out, id: string | undefined, jsonMode: boolean): Promise<number> {
+  let url = project.studioUrl.replace(/\/+$/, "");
+  if (id) {
+    if (id.startsWith("auto-")) {
+      const response = await studioRequest(project, "GET", `/studio/automations/${encodeURIComponent(id)}`);
+      if (response.status !== 200) return reportApiError(out, "open", response, jsonMode);
+      url += `/#/automations/${encodeURIComponent(id)}`;
+    } else {
+      const response = await studioRequest(project, "GET", `/studio/runs/${encodeURIComponent(id)}`);
+      if (response.status !== 200) return reportApiError(out, "open", response, jsonMode);
+      url += `/#/runs/${encodeURIComponent(id)}`;
+    }
+  }
+  if (jsonMode) out.log(JSON.stringify({ url }));
+  else out.log(url);
+  const browser = process.env.BROWSER;
+  if (browser) {
+    const child = spawn(browser, [url], { detached: true, stdio: "ignore" });
+    child.once("error", (error) => out.error(`pixie open: could not launch $BROWSER (${error.message})`));
+    child.unref();
+  }
   return 0;
 }
 
 // -- entry ------------------------------------------------------------------------------------------------
 
 export async function main(argv: string[], out: Out = stdio): Promise<number> {
-  const { values, positionals } = parseArgs({
-    args: argv,
-    allowPositionals: true,
-    options: {
-      account: { type: "string" },
-      input: { type: "string" },
-      scripted: { type: "boolean", default: false },
-      headless: { type: "boolean", default: false },
-      portal: { type: "boolean", default: false },
-      help: { type: "boolean", short: "h", default: false }
-    }
-  });
-  const [command, arg] = positionals;
+  interface CliOptions {
+    account?: string;
+    automation?: string;
+    "allowed-origin"?: string[];
+    events?: boolean;
+    follow?: boolean;
+    headless?: boolean;
+    help?: boolean;
+    id?: string;
+    "idempotency-key"?: string;
+    input?: string;
+    json?: boolean;
+    name?: string;
+    origin?: string;
+    output?: string;
+    portal?: boolean;
+    ref?: string;
+    revision?: string;
+    role?: string;
+    scripted?: boolean;
+    template?: string;
+    url?: string;
+  }
+  let parsed: { values: CliOptions; positionals: string[] };
+  try {
+    parsed = parseArgs({
+      args: argv,
+      allowPositionals: true,
+      options: {
+        account: { type: "string" },
+        automation: { type: "string" },
+        "allowed-origin": { type: "string", multiple: true },
+        events: { type: "boolean" },
+        follow: { type: "boolean" },
+        headless: { type: "boolean" },
+        help: { type: "boolean", short: "h" },
+        id: { type: "string" },
+        "idempotency-key": { type: "string" },
+        input: { type: "string" },
+        json: { type: "boolean" },
+        name: { type: "string" },
+        origin: { type: "string" },
+        output: { type: "string", short: "o" },
+        portal: { type: "boolean" },
+        ref: { type: "string" },
+        revision: { type: "string" },
+        role: { type: "string" },
+        scripted: { type: "boolean" },
+        template: { type: "string" },
+        url: { type: "string" }
+      }
+    }) as unknown as { values: CliOptions; positionals: string[] };
+  } catch (error) {
+    const command = argv.find((value) => !value.startsWith("-")) ?? "cli";
+    out.error(`pixie ${command}: ${(error as Error).message}`);
+    return 2;
+  }
+  const { values, positionals } = parsed;
+  const [command, arg, subarg, third] = positionals;
+  const jsonMode = values.json === true;
   if (values.help || !command) {
     out.log(HELP);
     return command ? 0 : 2;
   }
-  const project = loadProject();
+  let project: Project;
+  try {
+    project = loadProject();
+  } catch (error) {
+    out.error(`pixie ${command}: ${(error as Error).message}`);
+    return 1;
+  }
+  const required = (value: string | undefined, usageText: string): value is string => {
+    if (value) return true;
+    out.error(`usage: ${usageText}`);
+    return false;
+  };
   try {
     switch (command) {
       case "init":
-        if (!arg) return usage(out, "pixie init <directory>");
-        return init(arg, out);
+        if (!required(arg, "pixie init <directory>")) return 2;
+        return init(arg, out, jsonMode);
       case "doctor":
-        return doctor(project, out);
+        return doctor(project, out, jsonMode);
       case "dev":
-        return dev(project, { scripted: values.scripted, headless: values.headless, portal: values.portal }, out);
+        return dev(project, { scripted: values.scripted === true, headless: values.headless === true, portal: values.portal === true }, out);
       case "list":
-        return list(project, out);
-      case "test":
-        if (!arg) return usage(out, "pixie test <automationId> [--account <id>] [--input '<json>']");
-        return testRun(project, arg, values.account ?? project.accountId, values.input ? JSON.parse(values.input) : {}, out);
+        return list(project, out, jsonMode);
+      case "accounts":
+        if (!arg || arg === "list") return accountsList(project, out, jsonMode);
+        if (arg === "add") {
+          if (!values.name || !values.origin) return usage(out, "pixie accounts add --name <n> --origin <url> [--id <id>]");
+          return accountAdd(project, out, values.name, values.origin, values.id, jsonMode);
+        }
+        if (arg === "secret") {
+          if (!subarg || !values.ref) return usage(out, "pixie accounts secret <id> --ref <name> (reads value securely from stdin)");
+          return accountSecret(project, out, subarg, values.ref, jsonMode);
+        }
+        return usage(out, "pixie accounts [list] | accounts add --name <n> --origin <url> [--id <id>] | accounts secret <id> --ref <name>");
+      case "create": {
+        if (!required(arg, "pixie create <name> --url <startUrl> [--template <name>] [--allowed-origin <origin>...]")) return 2;
+        if (!values.url) return usage(out, "pixie create <name> --url <startUrl> [--template <name>] [--allowed-origin <origin>...]");
+        const allowedOrigins = values["allowed-origin"] as string[] | undefined;
+        return createAutomation(project, out, arg, values.url, values.template, allowedOrigins, jsonMode);
+      }
+      case "show":
+        if (!required(arg, "pixie show <automationId>")) return 2;
+        return showAutomation(project, out, arg, jsonMode);
+      case "record":
+        if (arg === "start" || arg === "status" || arg === "stop") {
+          if (!required(subarg, `pixie record ${arg} <automationId>${arg === "start" ? " [--url <url>]" : ""}`)) return 2;
+          return (await recordRequest(project, out, subarg, arg, values.url, jsonMode)).code;
+        }
+        if (!required(arg, "pixie record <automationId> | pixie record start|status|stop <automationId>")) return 2;
+        return recordInteractive(project, out, arg, values.url, jsonMode);
+      case "definition":
+        if (arg === "get") {
+          if (!required(subarg, "pixie definition get <automationId> [-o file]")) return 2;
+          return definitionGet(project, out, subarg, values.output, jsonMode);
+        }
+        if (arg === "set") {
+          if (!subarg || !third) return usage(out, "pixie definition set <automationId> <file>");
+          return definitionSet(project, out, subarg, third, jsonMode);
+        }
+        return usage(out, "pixie definition get <automationId> [-o file] | pixie definition set <automationId> <file>");
+      case "draft":
+        if (!required(arg, "pixie draft <automationId>")) return 2;
+        return draft(project, out, arg, jsonMode);
+      case "test": {
+        if (!required(arg, "pixie test <automationId> [--account <id>] [--input '<json>'] [--follow]")) return 2;
+        let input: unknown = {};
+        try {
+          if (values.input) input = JSON.parse(values.input) as unknown;
+        } catch (error) {
+          out.error(`pixie test: --input must be valid JSON (${(error as Error).message})`);
+          return 2;
+        }
+        return testRun(project, arg, values.account ?? project.accountId, input, out, values.follow === true, jsonMode);
+      }
       case "publish":
-        if (!arg) return usage(out, "pixie publish <automationId>");
-        return publish(project, arg, out);
+        if (!required(arg, "pixie publish <automationId>")) return 2;
+        return publish(project, arg, out, jsonMode);
+      case "runs":
+        return runsList(project, out, values.automation, jsonMode);
+      case "run":
+        if (!required(arg, "pixie run <runId> [--events]")) return 2;
+        return showRun(project, out, arg, values.events === true, jsonMode);
+      case "cancel":
+        if (!required(arg, "pixie cancel <runId>")) return 2;
+        return cancelRun(project, out, arg, jsonMode);
+      case "invoke": {
+        if (!required(arg, "pixie invoke <automationId> --input '<json>' [--account <id>] [--revision <n>] [--idempotency-key <key>] [--follow]")) return 2;
+        if (values.input === undefined) return usage(out, "pixie invoke <automationId> --input '<json>' [--account <id>] [--revision <n>] [--idempotency-key <key>] [--follow]");
+        let input: unknown;
+        try {
+          input = JSON.parse(values.input) as unknown;
+        } catch (error) {
+          out.error(`pixie invoke: --input must be valid JSON (${(error as Error).message})`);
+          return 2;
+        }
+        return invoke(
+          project,
+          out,
+          arg,
+          input,
+          values.account ?? project.accountId,
+          values.revision,
+          values["idempotency-key"],
+          values.follow === true,
+          jsonMode
+        );
+      }
+      case "openapi":
+      case "export":
+        if (!required(arg, `pixie ${command} <automationId> [-o file]`)) return 2;
+        return documentRequest(project, out, command, arg, values.output, jsonMode);
+      case "keys":
+        if (arg !== "create") return usage(out, "pixie keys create <name> --role client|developer");
+        if (positionals.length > 3) return usage(out, "pixie keys create <name> --role client|developer");
+        if ((!subarg && !values.name) || (values.role !== "client" && values.role !== "developer")) {
+          return usage(out, "pixie keys create <name> --role client|developer");
+        }
+        return createKey(project, out, subarg ?? values.name!, values.role, jsonMode);
+      case "open":
+        if (subarg) return usage(out, "pixie open [runId|automationId]");
+        return openStudio(project, out, arg, jsonMode);
       default:
-        out.error(`unknown command '${command}'\n\n${HELP}`);
+        out.error(`pixie ${command}: unknown command\n\n${HELP}`);
         return 2;
     }
   } catch (error) {
