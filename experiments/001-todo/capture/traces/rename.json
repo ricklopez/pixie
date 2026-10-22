@@ -1,0 +1,66 @@
+{
+  "traceVersion": 1,
+  "operation": "rename",
+  "demonstrationSource": "synthetic-scripted",
+  "inputs": [
+    "id",
+    "newTitle",
+    "requestId"
+  ],
+  "actions": [
+    {
+      "kind": "click",
+      "scopeBinding": "id",
+      "locatorCandidates": [
+        {
+          "testid": "rename-task",
+          "role": "button",
+          "accessibleName": "Rename task",
+          "text": "Rename",
+          "cssPath": "main:nth-of-type(1) > ul:nth-of-type(1) > li:nth-of-type(1) > button:nth-of-type(1)"
+        }
+      ],
+      "urlBefore": "http://fixture.local/",
+      "urlAfter": "http://fixture.local/",
+      "sanitized": true
+    },
+    {
+      "kind": "fill",
+      "inputBinding": "newTitle",
+      "scopeBinding": "id",
+      "locatorCandidates": [
+        {
+          "testid": "rename-input",
+          "role": "textbox",
+          "accessibleName": "New title",
+          "label": "New title",
+          "cssPath": "ul:nth-of-type(1) > li:nth-of-type(1) > div:nth-of-type(1) > label:nth-of-type(1) > input:nth-of-type(1)"
+        }
+      ],
+      "urlBefore": "http://fixture.local/",
+      "urlAfter": "http://fixture.local/",
+      "sanitized": true
+    },
+    {
+      "kind": "click",
+      "scopeBinding": "id",
+      "locatorCandidates": [
+        {
+          "testid": "save-rename",
+          "role": "button",
+          "accessibleName": "Save rename",
+          "text": "Save rename",
+          "cssPath": "main:nth-of-type(1) > ul:nth-of-type(1) > li:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)"
+        }
+      ],
+      "urlBefore": "http://fixture.local/",
+      "urlAfter": "http://fixture.local/",
+      "sanitized": true
+    }
+  ],
+  "versions": {
+    "capture": "pixie-demo-capture/1.0.0",
+    "playwright": "1.55.1",
+    "chromium": "140.0.7339.186"
+  }
+}
