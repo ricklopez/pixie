@@ -44,6 +44,8 @@ export interface RunMetrics {
   engine: string;
   engineRevision: string;
   modelCalls: number;
+  providerCalls: number;
+  estimatedCostUsd: number;
   actions: number;
   elapsedMs: number;
   modelLatencyMs: number[];
@@ -51,6 +53,9 @@ export interface RunMetrics {
   outputTokens: number;
   policyRejections: number;
 }
+
+const INPUT_TOKEN_PRICE_USD_PER_MILLION = 0.042; // https://docs.typesafe.ai/models
+const estimatedCost = (inputTokens: number) => Number(((inputTokens * INPUT_TOKEN_PRICE_USD_PER_MILLION) / 1_000_000).toFixed(6));
 
 const TERMINAL: RunState[] = ["completed", "needs_review", "awaiting_auth", "failed", "cancelled"];
 export const isTerminal = (state: RunState) => TERMINAL.includes(state);
@@ -239,6 +244,8 @@ export class RunManager {
       engine: selection.engine === "live" ? `${definition.engine}@${definition.engineRevision.slice(0, 12)}` : `${selection.engine} (offline substitute, not a model)`,
       engineRevision: definition.engineRevision,
       modelCalls: 0,
+      providerCalls: 0,
+      estimatedCostUsd: 0,
       actions: 0,
       elapsedMs: 0,
       modelLatencyMs: [],
@@ -255,6 +262,7 @@ export class RunManager {
         metrics.inputTokens += event.usage?.input_tokens ?? 0;
         metrics.outputTokens += event.usage?.output_tokens ?? 0;
       }
+      if (event.type === "provider_call") metrics.providerCalls += 1;
       if (event.type === "action") metrics.actions += 1;
       if (event.type === "policy_rejected") metrics.policyRejections += 1;
       if (event.type === "screenshot") {
@@ -273,6 +281,8 @@ export class RunManager {
     const finished: FinishedEvent = await handle.finished;
     clearTimeout(hardStop);
     metrics.elapsedMs = finished.elapsedMs;
+    metrics.providerCalls = Math.max(metrics.providerCalls, finished.providerCalls ?? 0);
+    metrics.estimatedCostUsd = estimatedCost(metrics.inputTokens);
     this.recordEvent(runId, { ...finished });
 
     switch (finished.outcome) {
@@ -314,9 +324,29 @@ export class RunManager {
   }
 
   private finish(runId: string, state: RunState, failure: Record<string, unknown> | null, metrics: RunMetrics | null, result: Record<string, unknown> | null = null) {
+    const finishedAt = now();
+    const priorEvents = isTerminal(state)
+      ? (this.db.prepare(`SELECT event FROM run_events WHERE run_id = ?`).all(runId) as { event: string }[]).map((row) => JSON.parse(row.event) as Record<string, unknown>)
+      : [];
+    const providerCallsFromEvents = priorEvents.filter((event) => event.type === "provider_call").length;
+    const inputTokensFromEvents = priorEvents.reduce((sum, event) => {
+      if (event.type !== "model_call" || typeof event.usage !== "object" || event.usage === null) return sum;
+      return sum + (Number((event.usage as Record<string, unknown>).input_tokens) || 0);
+    }, 0);
+    const providerCalls = Math.max(metrics?.providerCalls ?? 0, providerCallsFromEvents);
+    const inputTokens = metrics?.inputTokens ?? inputTokensFromEvents;
+    if (metrics) {
+      metrics.providerCalls = providerCalls;
+      metrics.estimatedCostUsd = estimatedCost(metrics.inputTokens);
+    }
     this.db
       .prepare(`UPDATE runs SET state = ?, failure = ?, metrics = ?, result = ?, finished_at = ? WHERE id = ?`)
-      .run(state, failure ? JSON.stringify(failure) : null, metrics ? JSON.stringify(metrics) : null, result ? JSON.stringify(result) : null, now(), runId);
+      .run(state, failure ? JSON.stringify(failure) : null, metrics ? JSON.stringify(metrics) : null, result ? JSON.stringify(result) : null, finishedAt, runId);
+    if (isTerminal(state) && providerCalls > 0) {
+      this.db
+        .prepare(`INSERT OR IGNORE INTO spend_ledger (run_id, at, provider_calls, input_tokens, estimated_cost_usd) VALUES (?, ?, ?, ?, ?)`)
+        .run(runId, finishedAt, providerCalls, inputTokens, estimatedCost(inputTokens));
+    }
     this.recordEvent(runId, { type: "state", state, ...(failure ?? {}) });
     for (const waiter of this.waiters.get(runId) ?? []) waiter();
   }

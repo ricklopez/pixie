@@ -78,6 +78,9 @@ CREATE TABLE IF NOT EXISTS run_events (
   run_id TEXT NOT NULL REFERENCES runs(id), seq INTEGER NOT NULL, at TEXT NOT NULL, event TEXT NOT NULL, PRIMARY KEY (run_id, seq));
 CREATE TABLE IF NOT EXISTS evidence (
   run_id TEXT NOT NULL REFERENCES runs(id), name TEXT NOT NULL, path TEXT NOT NULL, content_type TEXT NOT NULL, PRIMARY KEY (run_id, name));
+CREATE TABLE IF NOT EXISTS spend_ledger (
+  run_id TEXT PRIMARY KEY REFERENCES runs(id), at TEXT NOT NULL, provider_calls INTEGER NOT NULL,
+  input_tokens INTEGER NOT NULL, estimated_cost_usd REAL NOT NULL);
 `;
 
 export function openDatabase(path: string): DatabaseSync {

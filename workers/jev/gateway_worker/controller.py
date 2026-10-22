@@ -13,6 +13,7 @@ import re
 import time
 from datetime import datetime, timezone
 
+from .budget import ProviderCallBudget, ProviderCallBudgetExceeded
 from .conditions import all_hold, first_failing
 from .extract import extract_outputs
 from .lists import MutationRefused, apply_affordances, guard, read_fields, read_lists, verify, wait_settled
@@ -38,6 +39,7 @@ class Controller:
         deadline_ms=None,
         is_cancelled=lambda: False,
         evidence=None,
+        provider_budget=None,
     ):
         self.definition = definition
         self.inputs = inputs
@@ -47,6 +49,8 @@ class Controller:
         self.emit = emit
         self.is_cancelled = is_cancelled
         self.evidence = evidence
+        self.provider_budget = provider_budget or ProviderCallBudget()
+        self.provider_budget.on_call = self.provider_call_started
         self.limits = definition.get("limits", {})
         self.max_actions = int(self.limits.get("maxActions", 60))
         self.deadline_ms = deadline_ms or int(self.limits.get("deadlineMs", 120_000))
@@ -66,6 +70,9 @@ class Controller:
             raise Cancelled()
         if self.elapsed_ms() > self.deadline_ms:
             raise TimeoutError(f"Run exceeded the {self.deadline_ms} ms deadline")
+
+    def provider_call_started(self, provider):
+        self.emit({"type": "provider_call", "provider": provider})
 
     def render(self, template, *, secrets_as=SECRET_PLACEHOLDER):
         """Substitute caller inputs into a reviewed template. Secrets are never rendered."""
@@ -168,6 +175,8 @@ class Controller:
             return self.finish("extracted", None)
         except Cancelled:
             return self.finish("cancelled", "Cancellation requested")
+        except ProviderCallBudgetExceeded:
+            return self.finish("failed", ProviderCallBudgetExceeded.reason)
         except PolicyRejection as error:
             return self.finish("failed", f"policy_violation:{error.code}: {error}")
         except TimeoutError as error:
@@ -182,6 +191,7 @@ class Controller:
             "reason": reason,
             "elapsedMs": self.elapsed_ms(),
             "modelCalls": self.model_calls,
+            "providerCalls": self.provider_budget.calls,
             "actions": self.actions,
         }
         self.emit(result)

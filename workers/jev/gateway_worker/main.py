@@ -13,6 +13,7 @@ import sys
 import threading
 from pathlib import Path
 
+from .budget import ProviderCallBudget
 from .controller import Controller
 from .live import LiveEngine, LiveSession, require_configuration
 from .scripted import FailingEngine, ScriptedEngine
@@ -58,6 +59,7 @@ def run_command(command, emit, cancel_event):
     definition = command["definition"]
     session = None
     try:
+        provider_budget = ProviderCallBudget()
         engine = build_engine(command)
         if not os.environ.get("BU_CDP_URL"):
             raise RuntimeError("Missing required configuration: BU_CDP_URL")
@@ -74,8 +76,10 @@ def run_command(command, emit, cancel_event):
             deadline_ms=command.get("deadlineMs"),
             is_cancelled=cancel_event.is_set,
             evidence=evidence,
+            provider_budget=provider_budget,
         )
-        return controller.run()
+        with provider_budget.instrument(getattr(engine, "provider_client", None)):
+            return controller.run()
     except Exception as error:  # noqa: BLE001 - setup failures are reported explicitly, never masked
         result = {
             "type": "finished",
@@ -83,6 +87,7 @@ def run_command(command, emit, cancel_event):
             "reason": f"setup: {type(error).__name__}: {str(error)[:300]}",
             "elapsedMs": 0,
             "modelCalls": 0,
+            "providerCalls": 0,
             "actions": 0,
         }
         emit(result)

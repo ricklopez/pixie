@@ -25,6 +25,7 @@ export interface FinishedEvent {
   reason: string | null;
   elapsedMs: number;
   modelCalls: number;
+  providerCalls?: number;
   actions: number;
 }
 
@@ -47,6 +48,7 @@ export type WorkerEvent =
       usage: Record<string, number> | null;
       elapsedMs: number;
     }
+  | { type: "provider_call"; provider: string }
   | { type: "policy_allowed"; checkpointId: string; action: string | null; kind: string | null; boundInput: string | null }
   | { type: "action"; checkpointId: string; step: number; action: string | null; kind: string | null; boundInput: string | null; page_changed: boolean; url: string; typedLength: number }
   | { type: "stale_page"; checkpointId: string; reason: string; attempt: number }
