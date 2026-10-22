@@ -1,16 +1,26 @@
-"""Check handoff files and Git hygiene; not an application/security test."""
+"""Check prototype docs and Git hygiene; not an application/security test."""
 import json
 from pathlib import Path
 import subprocess
 
 root = Path(__file__).resolve().parents[1]
-required = ["README.md", "product-overview.md", "spec.md", "demo.md", "DEVIN_HANDOFF.md", "AGENTS.md", "docs/coderabbit.md", ".gitignore", ".env.example"]
+required = [
+    "README.md",
+    "PROVENANCE.md",
+    "docs/prototype/product-overview.md",
+    "docs/prototype/spec.md",
+    "docs/prototype/demo.md",
+    "docs/prototype/DEVIN_HANDOFF.md",
+    "docs/prototype/AGENTS.md",
+    ".gitignore",
+    ".env.example",
+]
 for name in required:
     assert (root / name).is_file(), f"Missing {name}"
     assert (root / name).read_text().strip(), f"Empty {name}"
-config = json.loads((root / ".coderabbit.yaml").read_text())
-assert config["reviews"]["auto_review"]["enabled"] is True
-assert config["reviews"]["auto_review"]["auto_incremental_review"] is True
+package = json.loads((root / "package.json").read_text())
+assert package["name"] == "pixie"
+assert "sites/*" not in package["workspaces"]
 tracked = subprocess.check_output(["git", "ls-files", "-z"], cwd=root).decode().split("\0")
 for name in filter(None, tracked):
     path = Path(name)
