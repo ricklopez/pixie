@@ -5,6 +5,7 @@ import { now } from "./db.js";
 import { RunManager, type RunManagerOptions } from "./runs.js";
 import { registerStudioRoutes } from "./studio.js";
 import { registerV1Routes } from "./v1.js";
+import { registerMcpRoute } from "./mcp.js";
 import type { BrowserProvider, BrowserbaseProvider } from "./browser-provider.js";
 
 export interface AppOptions extends Omit<RunManagerOptions, "db"> {
@@ -16,6 +17,7 @@ export interface AppOptions extends Omit<RunManagerOptions, "db"> {
   browserProfiles?: () => { name: string; cdpUrl: string; userDataDir: string }[];
   allowLoopback: boolean;
   publicBaseUrl: string;
+  studioBaseUrl?: string;
   logger?: boolean;
 }
 
@@ -56,6 +58,7 @@ export function buildApp(options: AppOptions): { app: FastifyInstance; runs: Run
     browserbaseProvider: options.browserbaseProvider
   });
   registerV1Routes(app, { runs, publicBaseUrl: options.publicBaseUrl, sendEvidenceFile: studio.sendEvidenceFile });
+  registerMcpRoute(app, { runs, publicBaseUrl: options.publicBaseUrl, studioBaseUrl: options.studioBaseUrl ?? "http://127.0.0.1:5173" });
   return {
     app,
     runs,

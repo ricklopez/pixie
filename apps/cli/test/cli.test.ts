@@ -70,6 +70,18 @@ async function withApi(run: (baseUrl: string, requests: RequestRecord[]) => Prom
       };
       const url = new URL(record.url, "http://127.0.0.1");
       const path = url.pathname;
+      if (path === "/mcp") {
+        const rpc = record.body as { method?: string; id?: string | number; params?: { protocolVersion?: string } };
+        if (rpc?.method === "notifications/initialized") {
+          res.writeHead(202, { "mcp-session-id": "stub-session" });
+          return res.end();
+        }
+        res.writeHead(200, { "content-type": "application/json", "mcp-session-id": "stub-session" });
+        res.end(JSON.stringify(rpc?.method === "tools/call"
+          ? { jsonrpc: "2.0", id: rpc.id, result: { content: [{ type: "text", text: "{\"runId\":\"run-1\"}" }] } }
+          : { jsonrpc: "2.0", id: rpc?.id, result: { protocolVersion: rpc?.params?.protocolVersion ?? "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "stub", version: "1" } } }));
+        return;
+      }
 
       if (path.startsWith("/studio/") && record.auth === "Bearer client-test-token") {
         return send(403, { error: "forbidden: developer key required" });
@@ -226,6 +238,23 @@ test("pixie init uses local synthetic defaults, never writes credentials, and re
   assert.equal(loadProject(dir).accountId, "acct_mine", "existing pixie.json untouched");
   assert.ok(lines.some((line) => line.includes("refusing")));
   assert.equal(readFileSync(resolve(dir, ".env.example"), "utf8").includes("TYPESAFE_API_KEY="), true);
+});
+
+test("MCP CLI config uses an environment reference and call sends the client token", async () => {
+  await withApi(async (baseUrl, requests) => {
+    const config = capture();
+    assert.equal(await main(["mcp", "config", "--client-token-env", "PIXIE_CLIENT"], config.out), 0);
+    assert.match(config.lines.join("\n"), new RegExp(`${baseUrl.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/mcp`));
+    assert.match(config.lines.join("\n"), /\$\{PIXIE_CLIENT\}/);
+    assert.doesNotMatch(config.lines.join("\n"), /client-config-token|client-test-token/);
+    const called = capture();
+    assert.equal(await main(["mcp", "call", "list_operations", "--args", "{}"], called.out), 0);
+    assert.match(called.lines[0] ?? "", /runId/);
+    const mcpRequests = requests.filter((request) => request.url === "/mcp");
+    assert.ok(mcpRequests.length >= 3);
+    assert.ok(mcpRequests.some((request) => (request.body as { method?: string })?.method === "tools/call"));
+    assert.ok(mcpRequests.every((request) => request.auth === "Bearer client-test-token"));
+  });
 });
 
 test("pixie doctor reports a missing live model variable and unreachable services", async () => {
