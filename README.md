@@ -9,7 +9,7 @@ a stable contract backed by explicit verification and a review path when the out
 > **Status: planning the rebuild; implementation has not started.** This repository contains direction and an
 > experiment plan, not a working framework. It builds on lessons from the
 > [Pixie prototype](https://github.com/ricklopezio/gateway/pull/2).
-> See the [v1 launch plan](docs/v1-plan.md) and [Experiment 001](docs/experiments/001-script-generation-and-reviewed-repair.md).
+> See the [complete v1 product specification](product/README.md), [v1 launch plan](docs/v1-plan.md) and [Experiment 001](docs/experiments/001-script-generation-and-reviewed-repair.md).
 
 ## Sites and demos
 
@@ -68,6 +68,18 @@ settings. Configure providers once through secure setup; keep keys out of fronte
 You own the infrastructure accounts and charges. Local browser login is not automatically copied to the cloud.
 This is the selected design, not an implemented deployment feature; the clickable demo uses no real keys or services.
 
+## Models, repositories, and adapters
+
+V1 separates the **Invoice model** (data shape), **operation contract** (inputs, outputs, permissions and verification),
+**InvoiceRepository.listOverdue** (business interface), and **browser adapter** (verified script implementation).
+REST and MCP use the same repository operation. Publish pins model/contract versions and the adapter revision;
+reviewed locator repairs preserve the public contract. This borrows LoopBack architectural boundaries without
+committing to LoopBack as a dependency.
+
+Only supported methods are exposed; defining a model does not generate unrestricted CRUD. Database connectors
+and external API adapters are next-phase work. A future database source or synchronized copy must explicitly
+define identity, freshness and consistency. The internal run-state database is still required in v1.
+
 ## Contracts and maintenance
 
 | Change | Proposed treatment |
@@ -100,7 +112,7 @@ writes. It never blindly replays a whole script. Authentication handoff does not
 
 Human login/MFA, bounded session lifetimes, Stop, context revocation, and restart cleanup belong in v1. Automated
 MFA collection and unrestricted collaborative control do not. See the [v1 plan](docs/v1-plan.md) for acceptance gates
-and the authenticated supplier-portal demo. All of this remains proposed, not implemented.
+and the [first Lemonade end-to-end use case](product/v1-lemonade-use-case.md). All of this remains proposed, not implemented.
 
 ## Lessons from the prototype
 
