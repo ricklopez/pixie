@@ -142,11 +142,14 @@ export interface Run {
     inputTokens: number;
     outputTokens: number;
     policyRejections: number;
+    browserSessionSeconds?: number;
+    connectionId?: string;
   } | null;
 }
 
 export interface SpendSummary {
   rows: { runId: string; at: string; providerCalls: number; inputTokens: number; estimatedCostUsd: number }[];
+  browserSessionSeconds?: number;
   total: { providerCalls: number; inputTokens: number; estimatedCostUsd: number };
 }
 
@@ -168,5 +171,19 @@ export interface Account {
   id: string;
   name: string;
   portalOrigin: string;
+  provider?: "local" | "browserbase";
+  environment?: string;
   createdAt: string;
+}
+
+export interface Connection {
+  id: string;
+  accountId: string;
+  accountName: string;
+  environment: string;
+  provider: "browserbase";
+  state: "disconnected" | "connecting" | "connected" | "auth_required";
+  contextStatus?: string;
+  lastVerifiedAt?: string | null;
+  controller?: boolean;
 }

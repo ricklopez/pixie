@@ -66,7 +66,7 @@ export interface WorkerHandle {
 }
 
 export interface WorkerRunner {
-  start(command: WorkerCommand, onEvent: (event: WorkerEvent) => void): WorkerHandle;
+  start(command: WorkerCommand, onEvent: (event: WorkerEvent) => void, cdpUrlOverride?: string): WorkerHandle;
 }
 
 export interface SubprocessRunnerOptions {
@@ -81,7 +81,7 @@ export interface SubprocessRunnerOptions {
 export class SubprocessRunner implements WorkerRunner {
   constructor(private readonly options: SubprocessRunnerOptions) {}
 
-  start(command: WorkerCommand, onEvent: (event: WorkerEvent) => void): WorkerHandle {
+  start(command: WorkerCommand, onEvent: (event: WorkerEvent) => void, cdpUrlOverride?: string): WorkerHandle {
     let child: ChildProcessWithoutNullStreams | null = null;
     let cancelled = false;
     let finishedEvent: FinishedEvent | null = null;
@@ -93,14 +93,18 @@ export class SubprocessRunner implements WorkerRunner {
         onEvent(failure);
         resolve(failure);
       };
-      const cdp = typeof this.options.cdpUrl === "string" ? Promise.resolve(this.options.cdpUrl) : this.options.cdpUrl(command.accountId);
+      const cdp = cdpUrlOverride
+        ? Promise.resolve(cdpUrlOverride)
+        : typeof this.options.cdpUrl === "string"
+          ? Promise.resolve(this.options.cdpUrl)
+          : this.options.cdpUrl(command.accountId);
       cdp.then((cdpUrl) => {
         if (cancelled) return settle("cancelled before the browser was ready");
         child = this.spawnWorker(command, cdpUrl);
         child.stderr.on("data", (chunk: Buffer) => {
           stderr = (stderr + chunk.toString()).slice(-4000);
         });
-        this.stream(child, onEvent, (event) => (finishedEvent = event), settle, () => stderr);
+        this.stream(child, (event) => onEvent(redactUrl(event, cdpUrl)), (event) => (finishedEvent = event), (reason) => settle(redactText(reason, cdpUrl)), () => stderr);
         child.stdin.write(JSON.stringify(command) + "\n");
       }, (error: Error) => settle(`browser for account ${command.accountId} unavailable: ${error.message}`));
     });
@@ -161,4 +165,17 @@ export class SubprocessRunner implements WorkerRunner {
       });
     }
   }
+}
+
+function redactText(value: string, cdpUrl: string): string {
+  return value.split(cdpUrl).join("[redacted browser connection]");
+}
+
+function redactUrl<T>(value: T, cdpUrl: string): T {
+  if (typeof value === "string") return redactText(value, cdpUrl) as T;
+  if (Array.isArray(value)) return value.map((item) => redactUrl(item, cdpUrl)) as T;
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactUrl(item, cdpUrl)])) as T;
+  }
+  return value;
 }
