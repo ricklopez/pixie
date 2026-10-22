@@ -1,5 +1,5 @@
 {
-  "name": "gateway",
+  "name": "pixie",
   "private": true,
   "version": "0.1.0",
   "description": "Show it once. Call it as an API.",

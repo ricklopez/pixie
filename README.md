@@ -136,3 +136,32 @@ and stopping conditions. Do not build the broader framework or begin this experi
 ## Acknowledgements
 
 The prototype used [Jev Ultrafast](https://github.com/browser-use/jev-ultrafast) as its browser decision engine.
+
+## Run the app locally
+
+Requires Node.js 24 (the workspace requires Node.js 22.13 or newer), Python 3, `uv`, and local Chrome.
+
+From the repository root:
+
+```sh
+source ~/.nvm/nvm.sh
+nvm use 24
+npm ci
+npm run worker:sync
+npm run build
+node apps/cli/bin/pixie.js dev --scripted --headless --portal
+```
+
+This starts the API on `http://127.0.0.1:4180`, the synthetic portal on
+`http://127.0.0.1:4174`, and Studio on `http://127.0.0.1:5173`. The scripted
+engine uses no model calls. In a second terminal, run the synthetic eligibility
+flow through the API and its separate client:
+
+```sh
+scripts/e2e-flow.sh
+```
+
+Stop the local services with Ctrl-C in the first terminal. If `uv` is missing,
+install it with the official installer at <https://docs.astral.sh/uv/>. If Chrome
+is not discovered automatically, set `GATEWAY_CHROME_PATH` in your shell to its
+executable path; do not put machine-specific paths in the repository.
