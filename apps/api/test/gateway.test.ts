@@ -58,12 +58,14 @@ test("provider metrics and spend ledger are recorded once and scoped to the tena
   assert.equal(run.metrics.estimatedCostUsd, 0.00105);
 
   const spend = await call(app, TOKENS.developer, "GET", "/studio/spend");
-  const row = (spend.json.rows as { runId: string; providerCalls: number; inputTokens: number; estimatedCostUsd: number }[])[0]!;
+  const rows = spend.json.rows as { runId: string; providerCalls: number; inputTokens: number; estimatedCostUsd: number }[];
+  const row = rows.find((item) => item.runId === testRunId)!;
+  assert.equal(rows.length, 2, "the accepted test and publication smoke each record their own spend");
   assert.equal(row.runId, testRunId);
   assert.equal(row.providerCalls, 2);
   assert.equal(row.inputTokens, 25000);
   assert.equal(row.estimatedCostUsd, 0.00105);
-  assert.deepEqual(spend.json.total, { providerCalls: 2, inputTokens: 25000, estimatedCostUsd: 0.00105 });
+  assert.deepEqual(spend.json.total, { providerCalls: 4, inputTokens: 50000, estimatedCostUsd: 0.0021 });
 
   createApiKey(db, "tenant_other", "other developer", "developer", "other-dev-token");
   const foreign = await call(app, "other-dev-token", "GET", "/studio/spend");
@@ -205,7 +207,7 @@ test("A11: one active run per account (FIFO) and cancellation of queued/running 
   assert.equal(finishedA.state, "cancelled");
   const finishedB = await runs.waitForTerminal(b.json.id!);
   assert.equal(finishedB.state, "completed");
-  assert.equal(runner.commands.length, 3); // the test run plus a and b; c never started
+  assert.equal(runner.commands.length, 4); // the test run, publication smoke, and runs a and b; c never started
   const again = await call(app, TOKENS.client, "POST", `/v1/automations/${id}/runs/${b.json.id}/cancel`);
   assert.equal(again.status, 409);
   await shutdown();

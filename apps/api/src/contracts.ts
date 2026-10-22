@@ -209,7 +209,7 @@ export function prepareContractPublication(
   };
 }
 
-export function persistContractPublication(db: DatabaseSync, plan: ContractPublicationPlan) {
+export function persistContractPublication(db: DatabaseSync, plan: ContractPublicationPlan, options: { activateBinding?: boolean } = {}) {
   if (plan.model) {
     db.prepare(`INSERT INTO model_versions (id, tenant_id, name, major, minor, schema_json, identity_fields, hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(plan.model.id, plan.model.tenant_id, plan.model.name, plan.model.major, plan.model.minor, plan.model.schema_json, plan.model.identity_fields, plan.model.hash);
@@ -248,11 +248,13 @@ export function persistContractPublication(db: DatabaseSync, plan: ContractPubli
       plan.adapter.automation_revision,
       plan.adapter.hash
     );
-  db.prepare(`INSERT INTO publication_bindings (repository_id, method, major, operation_version_id, adapter_revision_id)
-    VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(repository_id, method, major) DO UPDATE SET
-      operation_version_id = excluded.operation_version_id, adapter_revision_id = excluded.adapter_revision_id`)
-    .run(plan.repositoryId, plan.method, plan.major, plan.operation?.id ?? plan.adapter.operation_version_id, plan.adapter.id);
+  if (options.activateBinding !== false) {
+    db.prepare(`INSERT INTO publication_bindings (repository_id, method, major, operation_version_id, adapter_revision_id)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(repository_id, method, major) DO UPDATE SET
+        operation_version_id = excluded.operation_version_id, adapter_revision_id = excluded.adapter_revision_id`)
+      .run(plan.repositoryId, plan.method, plan.major, plan.operation?.id ?? plan.adapter.operation_version_id, plan.adapter.id);
+  }
 }
 
 export function backfillPublishedContracts(db: DatabaseSync): number {

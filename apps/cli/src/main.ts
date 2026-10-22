@@ -8,6 +8,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { TODO_TEMPLATES } from "@gateway/definition";
 import { resolveChromeExecutable } from "@gateway/recorder";
+import { RenderProvider, runDeployCommand } from "./deploy.js";
 
 /** Root of the Pixie checkout this CLI was built in; `pixie dev`/`doctor` operate on that checkout. */
 export const CHECKOUT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -60,6 +61,10 @@ const HELP = `pixie — local developer CLI for the Pixie gateway (runs from thi
   pixie reject <repairId> --reason <text>
   pixie rollback <id>
   pixie publish <id>              publish the tested definition
+  pixie deploy services           list Render service names (read-only)
+  pixie deploy status             show the configured runtime deploy status
+  pixie deploy runtime            deploy the configured runtime (explicit opt-in required)
+  pixie activations <id>          show publication activation history
   pixie models                    list published output models
   pixie repos                     list published repositories
   pixie ops [repo]                list declared repository operations
@@ -799,6 +804,12 @@ export async function publish(project: Project, automationId: string, out: Out =
   const result = asObject(response.json);
   const revision = String(result?.revision ?? "");
   out.log(`published ${automationId} revision ${revision} (checksum ${String(result?.checksum ?? "")})`);
+  const artifact = asObject(result?.artifact);
+  const activation = asObject(result?.activation);
+  if (artifact) {
+    out.log(`artifact ${String(artifact.hash)} (${artifact.reused ? "reused" : "new"})`);
+  }
+  if (activation) out.log(`activation ${String(activation.id)} state=${String(activation.state)}`);
   if (result?.compatibility) {
     const model = asObject(result.modelVersion);
     const operation = asObject(result.operationVersion);
@@ -1301,6 +1312,11 @@ export async function main(argv: string[], out: Out = stdio): Promise<number> {
       case "publish":
         if (!required(arg, "pixie publish <automationId>")) return 2;
         return publish(project, arg, out, jsonMode);
+      case "deploy":
+        return runDeployCommand(arg, new RenderProvider(process.env.RENDER_API_KEY ?? ""), process.env, out);
+      case "activations":
+        if (!required(arg, "pixie activations <activationId>")) return 2;
+        return adapterRequest(project, "GET", `/studio/activations/${encodeURIComponent(arg)}`, undefined, out, jsonMode);
       case "models":
         return contractList(project, "models", undefined, out, jsonMode);
       case "repos":

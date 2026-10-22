@@ -622,6 +622,14 @@ function TestTab({ automation, accounts, changed }: { automation: Automation; ac
 function PublishTab({ automation, changed }: { automation: Automation; changed: () => Promise<void> }) {
   const [error, setError] = useState<string | null>(null);
   const [exported, setExported] = useState<ReviewExport | null>(null);
+  const [publication, setPublication] = useState<{
+    runtimeServiceId: string | null;
+    activations: {
+      id: string; state: string; artifactHash: string; artifactSize: number; reused: boolean;
+      stagedAt: string; smokedAt: string | null; activatedAt: string | null; smokeRunId: string | null;
+      failure: string | null; method: string; major: number; adapterRevision: number;
+    }[];
+  } | null>(null);
   const [contract, setContract] = useState<{
     repository: string; method: string; identityFields: string[]; identityLegacy: boolean;
     compatibility: { level: "major" | "minor" | "adapter"; changes: { path: string; kind: string }[] };
@@ -632,6 +640,9 @@ function PublishTab({ automation, changed }: { automation: Automation; changed: 
   useEffect(() => {
     api<typeof contract>("GET", `/studio/automations/${automation.id}/contract`).then(setContract).catch(() => setContract(null));
   }, [automation]);
+  useEffect(() => {
+    api<typeof publication>("GET", `/studio/automations/${automation.id}/publications`).then(setPublication).catch(() => setPublication(null));
+  }, [automation.id, automation.revisions.length]);
   return (
     <>
       <div className="panel">
@@ -643,6 +654,25 @@ function PublishTab({ automation, changed }: { automation: Automation; changed: 
           {contract.compatibility.changes.map((change, index) => <p className="muted" key={`${change.path}-${index}`}><code>{change.kind}</code> {change.path}</p>)}
           {contract.error && <p className="error">{contract.error}</p>}
         </> : <p className="muted">Loading contract preview…</p>}
+      </div>
+      <div className="panel">
+        <h2>Deployment</h2>
+        <p className="muted">Publication artifacts are immutable bundles. Smoke tests run before the active binding is switched.</p>
+        <p>Runtime service: <code>{publication?.runtimeServiceId ?? "not configured"}</code> <span className="muted">(read-only)</span></p>
+        {!publication && <p className="muted">Loading publication history…</p>}
+        {publication?.activations.map((activation) => (
+          <div key={activation.id} className="panel">
+            <p><strong>{activation.method} v{activation.major}</strong> · adapter rev {activation.adapterRevision} · {activation.state}</p>
+            <p>Artifact <code>{activation.artifactHash}</code> · {activation.artifactSize} bytes · {activation.reused ? "reused" : "new"}</p>
+            <ol>
+              <li>Staged {new Date(activation.stagedAt).toLocaleString()}</li>
+              <li>{activation.smokedAt ? `Smoke passed ${new Date(activation.smokedAt).toLocaleString()}` : "Smoke pending or failed"}{activation.smokeRunId ? <> · <a onClick={() => navigate(`/runs/${activation.smokeRunId}`)}>{activation.smokeRunId.slice(0, 8)}</a></> : null}</li>
+              <li>{activation.activatedAt ? `Binding switched ${new Date(activation.activatedAt).toLocaleString()}` : "Binding not switched"}</li>
+            </ol>
+            {activation.failure && <p className="error">{activation.failure}</p>}
+          </div>
+        ))}
+        {publication && !publication.activations.length && <p className="muted">No publication activations yet.</p>}
       </div>
       <div className="panel">
         <h2>Publish an immutable revision</h2>

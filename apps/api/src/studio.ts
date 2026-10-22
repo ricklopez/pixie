@@ -46,6 +46,13 @@ import {
   previewContract,
   retireOperation
 } from "./contracts.js";
+import {
+  activatePublication,
+  failPublicationActivation,
+  recordActivationSmoke,
+  stagePublicationActivation,
+  storePublicationArtifact
+} from "./publication.js";
 
 export interface StudioContext {
   runs: RunManager;
@@ -486,6 +493,48 @@ export function registerStudioRoutes(app: FastifyInstance, ctx: StudioContext) {
     studio.post<{ Params: { id: string } }>("/studio/automations/:id/publish", async (req, reply) => {
       const row = automation(req.params.id, req.principal.tenantId);
       if (!row) return reply.code(404).send({ error: "not found" });
+      if (row.state === "published") {
+        db.prepare(`UPDATE publication_activations SET artifact_reused = 1
+          WHERE id = (SELECT pa.id FROM publication_activations pa
+            JOIN adapter_revisions ar ON ar.id = pa.adapter_revision_id
+            WHERE ar.automation_id = ? AND pa.state = 'active'
+              AND ar.automation_revision = (SELECT MAX(revision) FROM revisions WHERE automation_id = ?)
+            ORDER BY pa.created_at DESC LIMIT 1)`)
+          .run(row.id, row.id);
+        const existing = db.prepare(`SELECT r.revision, r.checksum, ar.id AS adapterRevisionId,
+            ar.revision AS adapterRevision, ov.id AS operationVersionId, ov.major, ov.minor,
+            ov.model_version_id AS modelVersionId, repo.name AS repository, ov.method,
+            pa.id AS activationId, pa.state AS activationState, pa.smoke_run_id AS smokeRunId,
+            pa.artifact_hash AS artifactHash, artifact.size AS artifactSize
+          FROM revisions r
+          JOIN adapter_revisions ar ON ar.automation_id = r.automation_id AND ar.automation_revision = r.revision
+          JOIN operation_versions ov ON ov.id = ar.operation_version_id
+          JOIN repositories repo ON repo.id = ov.repository_id
+          JOIN publication_activations pa ON pa.adapter_revision_id = ar.id AND pa.state = 'active'
+          JOIN publication_artifacts artifact ON artifact.hash = pa.artifact_hash
+          WHERE r.automation_id = ? AND r.revision = (SELECT MAX(revision) FROM revisions WHERE automation_id = ?)
+          ORDER BY pa.created_at DESC LIMIT 1`).get(row.id, row.id) as {
+          revision: number; checksum: string; adapterRevisionId: string; adapterRevision: number;
+          operationVersionId: string; major: number; minor: number; modelVersionId: string;
+          repository: string; method: string; activationId: string; activationState: string;
+          smokeRunId: string | null; artifactHash: string; artifactSize: number;
+        } | undefined;
+        if (!existing) return reply.code(409).send({ error: "latest published revision has no successful activation" });
+        return reply.code(201).send({
+          automationId: row.id,
+          revision: existing.revision,
+          checksum: existing.checksum,
+          openapiUrl: `${ctx.publicBaseUrl}/v1/automations/${row.id}/openapi.json`,
+          compatibility: "adapter",
+          repository: existing.repository,
+          method: existing.method,
+          modelVersion: { id: existing.modelVersionId, major: existing.major, minor: existing.minor },
+          operationVersion: { id: existing.operationVersionId, major: existing.major, minor: existing.minor },
+          adapterRevision: { id: existing.adapterRevisionId, revision: existing.adapterRevision },
+          artifact: { hash: existing.artifactHash, size: existing.artifactSize, reused: true },
+          activation: { id: existing.activationId, state: existing.activationState, smokeRunId: existing.smokeRunId }
+        });
+      }
       if (row.state !== "ready") return reply.code(409).send({ error: `only automations in state 'ready' can be published (current: ${row.state}); run a passing test first` });
       const test = row.last_test_run_id ? ctx.runs.get(row.last_test_run_id) : undefined;
       if (!test || test.state !== "completed") return reply.code(409).send({ error: "the latest test run did not complete with an accepted result" });
@@ -504,6 +553,8 @@ export function registerStudioRoutes(app: FastifyInstance, ctx: StudioContext) {
       const checksum = await definitionChecksum(definition);
       const next = (db.prepare(`SELECT COALESCE(MAX(revision), 0) + 1 AS n FROM revisions WHERE automation_id = ?`).get(row.id) as { n: number }).n;
       let contract;
+      let artifact: ReturnType<typeof storePublicationArtifact>;
+      let activationId = "";
       try {
         db.exec("BEGIN IMMEDIATE");
         const target = contractTarget(definition);
@@ -513,15 +564,68 @@ export function registerStudioRoutes(app: FastifyInstance, ctx: StudioContext) {
         db.prepare(`INSERT INTO revisions (automation_id, revision, checksum, definition, published_at, published_by, test_run_id) VALUES (?, ?, ?, ?, ?, ?, ?)`).run(
           row.id, next, checksum, JSON.stringify(definition), now(), req.principal.name, test.id
         );
-        persistContractPublication(db, contract);
+        persistContractPublication(db, contract, { activateBinding: false });
+        const operation = db.prepare(`SELECT model_version_id FROM operation_versions WHERE id = ?`)
+          .get(contract.operationVersionId) as { model_version_id: string };
+        artifact = storePublicationArtifact(db, {
+          tenantId: req.principal.tenantId,
+          adapterRevisionId: contract.adapter.id,
+          source: adapterSource,
+          definition,
+          operationVersionId: contract.operationVersionId,
+          modelVersionId: operation.model_version_id
+        });
+        activationId = stagePublicationActivation(db, {
+          tenantId: req.principal.tenantId,
+          repositoryId: contract.repositoryId,
+          method: contract.method,
+          major: contract.major,
+          operationVersionId: contract.operationVersionId,
+          adapterRevisionId: contract.adapter.id,
+          artifactHash: artifact.hash,
+          artifactReused: artifact.reused
+        });
         setState(row.id, "published");
         db.exec("COMMIT");
       } catch (error) {
         db.exec("ROLLBACK");
-        return reply.code(error instanceof Error && /keyFields/.test(error.message) ? 422 : 500).send({ error: error instanceof Error ? error.message : "contract publication failed" });
+        const status = error instanceof Error && /keyFields|dependency|exceeds/.test(error.message) ? 422 : 500;
+        return reply.code(status).send({ error: error instanceof Error ? error.message : "contract publication failed" });
       }
       const operation = db.prepare(`SELECT major, minor, model_version_id FROM operation_versions WHERE id = ?`)
         .get(contract.operationVersionId) as { major: number; minor: number; model_version_id: string };
+      const testMetrics = test.metrics ? JSON.parse(test.metrics) as { engine?: string } : {};
+      const smoke = await ctx.runs.create({
+        tenantId: req.principal.tenantId,
+        automationId: row.id,
+        revision: next,
+        definition,
+        accountId: test.account_id,
+        callerId: test.caller_id,
+        kind: "test",
+        input: JSON.parse(test.input),
+        operationVersionId: contract.operationVersionId,
+        adapterRevisionId: contract.adapter.id,
+        engine: adapterSource ? "script" : testMetrics.engine?.includes("live") ? "live" : "scripted",
+        ...(adapterSource ? { adapterSource } : {})
+      });
+      if (!smoke.ok) {
+        failPublicationActivation(db, activationId, smoke.error);
+        return reply.code(409).send({ error: "publication smoke test could not start", activationId, artifactHash: artifact.hash, activationState: "failed" });
+      }
+      recordActivationSmoke(db, activationId, smoke.run.id);
+      const smokeResult = await ctx.runs.waitForTerminal(smoke.run.id);
+      const activated = smokeResult.state === "completed" && activatePublication(db, activationId);
+      if (!activated) {
+        failPublicationActivation(db, activationId, "publication smoke test failed");
+        return reply.code(409).send({
+          error: "publication smoke test failed; the prior binding remains active",
+          activationId,
+          artifactHash: artifact.hash,
+          activationState: "failed",
+          smokeRunId: smoke.run.id
+        });
+      }
       return reply.code(201).send({
         automationId: row.id,
         revision: next,
@@ -533,8 +637,39 @@ export function registerStudioRoutes(app: FastifyInstance, ctx: StudioContext) {
         method: contract.method,
         modelVersion: { id: operation.model_version_id, major: operation.major, minor: operation.minor },
         operationVersion: { id: contract.operationVersionId, major: operation.major, minor: operation.minor },
-        adapterRevision: { id: contract.adapter.id, revision: contract.adapter.revision }
+        adapterRevision: { id: contract.adapter.id, revision: contract.adapter.revision },
+        artifact: { hash: artifact.hash, size: artifact.size, reused: artifact.reused },
+        activation: { id: activationId, state: "active", smokeRunId: smoke.run.id }
       });
+    });
+    studio.get<{ Params: { id: string } }>("/studio/automations/:id/publications", async (req, reply) => {
+      const row = automation(req.params.id, req.principal.tenantId);
+      if (!row) return reply.code(404).send({ error: "not found" });
+      const activations = db.prepare(`SELECT pa.id, pa.state, pa.artifact_hash AS artifactHash,
+          pa.smoke_run_id AS smokeRunId, pa.failure, pa.created_at AS createdAt, pa.updated_at AS updatedAt,
+          pa.created_at AS stagedAt, pa.smoked_at AS smokedAt, pa.activated_at AS activatedAt,
+          pa.method, pa.major, pa.adapter_revision_id AS adapterRevisionId,
+          ar.revision AS adapterRevision, a.size AS artifactSize,
+          pa.artifact_reused AS reused
+        FROM publication_activations pa
+        JOIN adapter_revisions ar ON ar.id = pa.adapter_revision_id
+        JOIN publication_artifacts a ON a.hash = pa.artifact_hash
+        WHERE pa.tenant_id = ? AND ar.automation_id = ?
+        ORDER BY pa.created_at DESC`).all(req.principal.tenantId, row.id);
+      return { activations, runtimeServiceId: process.env.PIXIE_RENDER_SERVICE_ID ?? null };
+    });
+    studio.get<{ Params: { id: string } }>("/studio/activations/:id", async (req, reply) => {
+      const activation = db.prepare(`SELECT pa.id, pa.state, pa.failure, pa.smoke_run_id AS smokeRunId,
+          pa.artifact_hash AS artifactHash, pa.created_at AS stagedAt, pa.smoked_at AS smokedAt,
+          pa.activated_at AS activatedAt, pa.updated_at AS updatedAt, a.size AS artifactSize,
+          pa.artifact_reused AS reused,
+          pa.method, pa.major
+        FROM publication_activations pa
+        JOIN publication_artifacts a ON a.hash = pa.artifact_hash
+        WHERE pa.id = ? AND pa.tenant_id = ?`)
+        .get(req.params.id, req.principal.tenantId) as Record<string, unknown> | undefined;
+      if (!activation) return reply.code(404).send({ error: "not found" });
+      return activation;
     });
     studio.post<{ Params: { id: string }; Body: { runId: string; source?: string; model?: boolean } }>("/studio/automations/:id/repairs", async (req, reply) => {
       const row = automation(req.params.id, req.principal.tenantId);

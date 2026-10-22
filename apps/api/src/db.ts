@@ -105,6 +105,19 @@ CREATE TABLE IF NOT EXISTS publication_bindings (
   operation_version_id TEXT NOT NULL REFERENCES operation_versions(id),
   adapter_revision_id TEXT NOT NULL REFERENCES adapter_revisions(id),
   PRIMARY KEY (repository_id, method, major));
+CREATE TABLE IF NOT EXISTS publication_artifacts (
+  hash TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  adapter_revision_id TEXT NOT NULL REFERENCES adapter_revisions(id), size INTEGER NOT NULL,
+  manifest TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS publication_activations (
+  id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  repository_id TEXT NOT NULL REFERENCES repositories(id), method TEXT NOT NULL, major INTEGER NOT NULL,
+  operation_version_id TEXT NOT NULL REFERENCES operation_versions(id),
+  adapter_revision_id TEXT NOT NULL REFERENCES adapter_revisions(id), artifact_hash TEXT NOT NULL REFERENCES publication_artifacts(hash),
+  artifact_reused INTEGER NOT NULL DEFAULT 0,
+  previous_adapter_revision_id TEXT REFERENCES adapter_revisions(id), smoke_run_id TEXT REFERENCES runs(id),
+  state TEXT NOT NULL CHECK (state IN ('staged','smoked','active','failed','abandoned')),
+  failure TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, smoked_at TEXT, activated_at TEXT);
 CREATE TABLE IF NOT EXISTS retired_operations (
   operation_version_id TEXT PRIMARY KEY REFERENCES operation_versions(id),
   retired_at TEXT NOT NULL, retired_by TEXT NOT NULL);
@@ -119,6 +132,10 @@ BEGIN SELECT RAISE(ABORT, 'published rows are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS adapter_revisions_no_update BEFORE UPDATE ON adapter_revisions
 BEGIN SELECT RAISE(ABORT, 'published rows are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS adapter_revisions_no_delete BEFORE DELETE ON adapter_revisions
+BEGIN SELECT RAISE(ABORT, 'published rows are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS publication_artifacts_no_update BEFORE UPDATE ON publication_artifacts
+BEGIN SELECT RAISE(ABORT, 'published rows are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS publication_artifacts_no_delete BEFORE DELETE ON publication_artifacts
 BEGIN SELECT RAISE(ABORT, 'published rows are immutable'); END;
 CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, automation_id TEXT NOT NULL, revision INTEGER NOT NULL,
@@ -162,6 +179,9 @@ export function openDatabase(path: string): DatabaseSync {
   ensureColumn(db, "spend_ledger", "browser_session_seconds", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "spend_ledger", "output_tokens", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "adapter_revisions", "source", "TEXT");
+  ensureColumn(db, "publication_activations", "artifact_reused", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "publication_activations", "smoked_at", "TEXT");
+  ensureColumn(db, "publication_activations", "activated_at", "TEXT");
   upgradeRepairCandidates(db);
   return db;
 }
