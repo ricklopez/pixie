@@ -11,6 +11,12 @@ a stable contract backed by explicit verification and a review path when the out
 > [Pixie prototype](https://github.com/ricklopezio/gateway/pull/2).
 > See the [v1 launch plan](docs/v1-plan.md) and [Experiment 001](docs/experiments/001-script-generation-and-reviewed-repair.md).
 
+## Sites and demos
+
+The [sites directory](sites/README.md) includes the public Pixie landing page, vision site, and clickable v1 demo.
+They are regular source folders in this repository, with local run instructions. The v1 demo illustrates local
+verification, human handoff, Jev traces, and one-button Render publication; it does not implement the actual framework.
+
 ## The problem
 
 Business data and actions often live behind websites with no suitable API. Browser scripts and agent prompts can
@@ -43,13 +49,24 @@ of the prototype. Deterministic instructions do not make a changing website dete
 - **Pixie** owns contracts, execution policy, verification, versioning, review, and repair promotion.
 - **Ultrafast** is the initial candidate for browser exploration and repair assistance. Code generation may require
   a separate coding agent; the experiment must establish that boundary rather than assume Ultrafast emits scripts.
-- **Browser infrastructure:** local Chrome for development and Browserbase as the proposed hosted provider for v1.
+- **Browser infrastructure:** local Chrome for development and Browserbase as the selected hosted browser provider for v1.
   Saved contexts and human handoff are early acceptance gates; compatibility is not yet established.
 - **Normal execution** should use scripts. Workflows needing ongoing semantic judgment may eventually declare explicit
   agent-assisted steps, but those are outside the first experiment.
 
 We should reuse browser infrastructure rather than recreate it. An HTTP wrapper, hosted browser, or CLI alone is
 not our differentiation. The hypothesis is that teams need a reusable way to maintain verified browser operations.
+
+## Local to hosted in one publish
+
+V1 targets **Render + Browserbase**. Build and test locally, then click **Publish API** in Studio. Pixie packages
+the tested revision, deploys to the configured Render runtime, runs hosted checks through Browserbase, and activates
+the REST/OpenAPI and MCP interfaces only after they pass. Failed publication preserves the previous active revision.
+
+The open-source edition uses your own Render API key and Browserbase API key, with required project/workspace
+settings. Configure providers once through secure setup; keep keys out of frontend code and source control.
+You own the infrastructure accounts and charges. Local browser login is not automatically copied to the cloud.
+This is the selected design, not an implemented deployment feature; the clickable demo uses no real keys or services.
 
 ## Contracts and maintenance
 

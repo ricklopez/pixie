@@ -15,6 +15,51 @@ CLI first: initialize a project, define an operation, connect an account, genera
 for live-session handoff, contract review, evidence, publishing, API exploration, and repair approval. CLI syntax
 in previews is illustrative until implementation is approved. A clickable concept is not the product implementation.
 
+## Deployment decision: local first, Render + Browserbase
+
+Selected v1 target: Render hosts the Pixie API and execution worker; Browserbase hosts cloud browser sessions
+and saved login contexts. Use a durable database for run checkpoints, operation revisions, deployment status,
+connection references, and ownership leases. Provider compatibility and restart recovery remain acceptance gates.
+Convex is not part of the selected v1 deployment. Keep the operation bundle independent of the hosting adapter.
+
+The open-source edition uses the operator's own Render API key and Browserbase API key, plus the Browserbase
+project ID and Render workspace/resource settings required by the providers. The operator owns those accounts
+and pays their infrastructure charges directly. Connect providers once; subsequent verified revisions publish
+through one button. Initial paid resource provisioning requires an explicit resource/cost review.
+
+Keep provider keys in local environment or an OS credential store during setup; configure necessary runtime secrets
+on the server. Never put keys in frontend bundles, browser storage, source control, logs, exports, or generated API
+documentation. The Render management key belongs to the deployment controller, not ordinary execution workers.
+Provider keys are separate from caller authentication and website login/MFA. The clickable demo accepts no real keys.
+
+### One-button publish contract
+
+1. Run the API and script locally, review the Studio browser/evidence view, and pass the frozen acceptance suite.
+2. Select the configured Render + Browserbase target. Preflight checks credentials, permissions, dependencies,
+   hosted reachability, and connection readiness. Cloud login may require a separate human handoff; never silently
+   upload a local Chrome profile or assume local login transfers to Browserbase.
+3. Click **Publish API**. Package the exact tested script, contract, checks, and pinned dependencies as an immutable
+   revision; deploy it into the operator's Render runtime. Reuse that runtime across operations rather than provision
+   a server for every endpoint. Generated/user scripts need isolation, resource bounds, and scoped secrets.
+4. Run a hosted smoke test against the authorized Browserbase connection. Show preflight, deployment, test, and
+   activation progress. Authentication required pauses publication with an actionable handoff; it is not success.
+5. Activate only after the hosted checks pass. Return the hosted endpoint, OpenAPI docs, and MCP interface. Failed
+   deployment or smoke test preserves the previous active revision; retry is idempotent. Rollback selects a prior
+   immutable revision and does not undo external writes.
+
+For long-running calls return a run ID/status and a guarded handoff link when needed. Persist pause/resume state
+outside worker memory. Demonstrate the hosted API still works with the local CLI stopped. Render deployment does
+not itself make browser execution durable; test restart cleanup, exclusive ownership, and safe continuation.
+
+### Publication acceptance gates
+
+- Missing/invalid provider configuration blocks deployment with an actionable error and no secret exposure.
+- Local tests fail: Publish stays disabled. Hosted tests fail: no activation and old revision stays available.
+- Repeated Publish does not duplicate resources or revisions. A crash mid-deploy can reconcile actual provider state.
+- Local and hosted execution share the same contract and tested artifact; hosted differences are reported explicitly.
+- Authenticated REST/OpenAPI and MCP work after the local process exits; context reuse and human handoff still work.
+- Provider revocation, resource teardown, rollback, and secret rotation have explicit supported procedures.
+
 ## Three persistence layers
 
 | Layer | Responsibility |
@@ -85,8 +130,11 @@ layout variants. No patient data, real credentials, or payment execution.
 1. CLI: initialize a project and describe `list-overdue-invoices` for a customer; show proposed contract and checks.
 2. Open Studio; the first run waits for authentication. Open the live session, Take control, simulate/sign in on the
    synthetic portal, and Resume. Verify the correct account and return invoices with evidence.
-3. Generate/test the script with varied inputs and freeze the contract. Publish REST/OpenAPI and MCP from that contract.
-4. Use API explorer and one supported MCP client to invoke it. A new browser session reuses saved authentication.
+3. Generate/test locally with varied inputs and freeze the contract. Configure user-owned Render and Browserbase
+   credentials through secure setup (simulated in the clickable demo). Click Publish API, watch deployment and hosted
+   smoke-test gates, then activate REST/OpenAPI and MCP from the same contract.
+4. Stop the local CLI. Use the hosted API explorer and one supported MCP client to invoke it. A distinct Browserbase
+   session reuses saved cloud authentication; local profile state is not implicitly transferred.
 5. Change the portal layout. Show explicit failure, a scoped repair diff, unchanged test results, and human promotion.
 6. Invoke the unchanged interface successfully. Inspect the implementation revision and demonstrate rollback.
 
@@ -97,7 +145,8 @@ portal; the fixture demonstrates mechanics, not universal site compatibility or 
 
 A. Local script-generation/repair experiment. B. Browserbase persistence and exclusive handoff spike. Both must pass.
 C. Shared contracts, durable runs, connection authorization, REST/OpenAPI and MCP. D. CLI-to-Studio experience.
-E. Regression evidence, failure recovery, demo rehearsal, and authorized real-portal validation.
+E. Render deployment adapter, secure bring-your-own-key setup, gated publication and rollback.
+F. Regression evidence, failure recovery, demo rehearsal, and authorized real-portal validation.
 
 Devin should identify uncertain Browserbase capabilities (especially interactive-access revocation and context sync),
 propose the smallest technical approach, and report blockers. Do not assume provider behavior or start implementing.
