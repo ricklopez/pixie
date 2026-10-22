@@ -1,0 +1,47 @@
+{
+  "traceVersion": 1,
+  "operation": "create",
+  "demonstrationSource": "synthetic-scripted",
+  "inputs": [
+    "title",
+    "requestId"
+  ],
+  "actions": [
+    {
+      "kind": "fill",
+      "inputBinding": "title",
+      "locatorCandidates": [
+        {
+          "testid": "new-task-title",
+          "role": "textbox",
+          "accessibleName": "Task title",
+          "label": "Task title",
+          "cssPath": "main:nth-of-type(1) > form:nth-of-type(1) > label:nth-of-type(1) > input:nth-of-type(1)"
+        }
+      ],
+      "urlBefore": "http://fixture.local/",
+      "urlAfter": "http://fixture.local/",
+      "sanitized": true
+    },
+    {
+      "kind": "click",
+      "locatorCandidates": [
+        {
+          "testid": "create-task",
+          "role": "button",
+          "accessibleName": "Add task",
+          "text": "Add task",
+          "cssPath": "main:nth-of-type(1) > form:nth-of-type(1) > button:nth-of-type(1)"
+        }
+      ],
+      "urlBefore": "http://fixture.local/",
+      "urlAfter": "http://fixture.local/",
+      "sanitized": true
+    }
+  ],
+  "versions": {
+    "capture": "pixie-demo-capture/1.0.0",
+    "playwright": "1.55.1",
+    "chromium": "140.0.7339.186"
+  }
+}

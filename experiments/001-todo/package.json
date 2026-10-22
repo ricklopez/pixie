@@ -1,0 +1,23 @@
+{
+  "name": "@pixie/experiment-001-todo",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "fixture": "tsx src/fixture/cli.ts",
+    "generate": "tsx src/generator/cli.ts",
+    "lock:update": "tsx src/contract/update-lock.ts",
+    "test": "tsx --test test/*.test.ts test/frozen/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.0",
+    "better-sqlite3": "13.0.3",
+    "playwright": "1.55.1",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3"
+  }
+}

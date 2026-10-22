@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CreateTodoInput",
+  "type": "object",
+  "properties": {
+    "title": { "type": "string", "minLength": 1, "pattern": "^pixie-demo " },
+    "requestId": { "type": "string", "format": "uuid" }
+  },
+  "required": ["title", "requestId"],
+  "additionalProperties": false
+}
