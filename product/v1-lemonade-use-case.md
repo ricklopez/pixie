@@ -1,5 +1,7 @@
 # First end-to-end automation — Lemonade
 
+Review resolution: [decisions and bounded G1 authorization](v1-review-decisions.md) supersede conflicting earlier wording. Cloud and real-portal gates remain closed.
+
 ## Objective and evidence boundary
 
 Prove that a developer can author a portal integration locally, log in once through a Browserbase browser,

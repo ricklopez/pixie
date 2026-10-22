@@ -1,5 +1,7 @@
 # V1 experience — CLI → Studio → published API
 
+Review resolution: [decisions and bounded G1 authorization](v1-review-decisions.md) supersede conflicting earlier wording. Cloud and real-portal gates remain closed.
+
 The demo site's structure is the interaction reference. The actual app must replace every simulated event with
 recorded state. Commands below define proposed UX; no working CLI is claimed and syntax may change after review.
 

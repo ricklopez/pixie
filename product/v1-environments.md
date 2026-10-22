@@ -1,5 +1,7 @@
 # V1 environments, configuration and deployment
 
+Review resolution: [decisions and bounded G1 authorization](v1-review-decisions.md) supersede conflicting earlier wording. Cloud and real-portal gates remain closed.
+
 This is an environment contract on paper, not deployable configuration. All `PIXIE_*` names below are proposed
 application configuration, not existing code. Provider mapping and exact runtime versions must be pinned before
 implementation. No real secrets or provisioned resource IDs are included.

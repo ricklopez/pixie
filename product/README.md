@@ -1,10 +1,12 @@
 # Pixie v1 — the app on paper
 
 Status: product specification for review, 2026-10-21. Owner: Rick Lopez.
-This package specifies the intended application, not implemented capabilities. It authorizes no implementation,
+This package specifies the intended application, not implemented capabilities. The [review decisions](v1-review-decisions.md) authorize only the bounded local G1 build slice. They do not authorize
 provider provisioning, real-account changes, or deployment. The clickable demo remains a simulation.
 
 ## Reading order
+
+Start with the [review decisions and prototype reference map](v1-review-decisions.md).
 
 1. [Product specification](v1-product-spec.md): promise, scope, architecture, data, interfaces and behavior.
 2. [CLI and Studio experience](v1-experience.md): screens, controls, states and Mermaid user flows.

@@ -1,5 +1,7 @@
 # V1 product specification
 
+Review resolution: [decisions and bounded G1 authorization](v1-review-decisions.md) supersede conflicting earlier wording. Cloud and real-portal gates remain closed.
+
 Status: proposed application behavior. All requirements below are release requirements, not claims about current code.
 
 ## 1. Product promise

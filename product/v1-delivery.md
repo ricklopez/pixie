@@ -1,5 +1,7 @@
 # V1 delivery, acceptance and decisions
 
+Review resolution: [decisions and bounded G1 authorization](v1-review-decisions.md) supersede conflicting earlier wording. Cloud and real-portal gates remain closed.
+
 Planning only. Implementation begins only after explicit approval. No provider resources or real portal writes
 are authorized by this document. A clickable demo is design evidence, not a passing product test.
 
