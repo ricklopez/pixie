@@ -13,6 +13,7 @@
     "test": "node --test --import tsx test/*.test.ts"
   },
   "dependencies": {
+    "@gateway/definition": "*",
     "@gateway/recorder": "*"
   },
   "devDependencies": {

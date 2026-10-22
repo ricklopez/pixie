@@ -1,88 +1,410 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { test } from "node:test";
-import { createServer } from "node:http";
 import { doctorChecks, init, loadProject, main } from "../src/main.js";
+
+interface RequestRecord {
+  method: string;
+  url: string;
+  auth: string | undefined;
+  idempotencyKey: string | undefined;
+  body: unknown;
+}
 
 const capture = () => {
   const lines: string[] = [];
-  return { lines, out: { log: (l: string) => lines.push(l), error: (l: string) => lines.push(`ERR ${l}`) } };
+  return { lines, out: { log: (line: string) => lines.push(line), error: (line: string) => lines.push(`ERR ${line}`) } };
 };
 
-test("pixie init scaffolds a project once and refuses to overwrite a non-empty directory", async () => {
+const automation = {
+  id: "auto-1",
+  name: "Synthetic eligibility",
+  state: "configuring",
+  definition: {
+    id: "auto-1",
+    name: "Synthetic eligibility",
+    startUrl: "http://127.0.0.1:4174/demo-portal",
+    allowedOrigins: ["http://127.0.0.1:4174"]
+  },
+  revisions: []
+};
+
+const verification = {
+  accepted: true,
+  checks: Array.from({ length: 16 }, (_, index) => ({ id: `check-${index + 1}`, passed: true })),
+  reasons: []
+};
+
+async function withApi(run: (baseUrl: string, requests: RequestRecord[]) => Promise<void>): Promise<void> {
+  const requests: RequestRecord[] = [];
+  let testPolls = 0;
+  let publicRunCreated = false;
+  const server = createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    req.on("end", () => {
+      const raw = Buffer.concat(chunks).toString("utf8");
+      let body: unknown = null;
+      if (raw) {
+        try {
+          body = JSON.parse(raw) as unknown;
+        } catch {
+          body = raw;
+        }
+      }
+      const record: RequestRecord = {
+        method: req.method ?? "GET",
+        url: req.url ?? "/",
+        auth: req.headers.authorization,
+        idempotencyKey: req.headers["idempotency-key"] as string | undefined,
+        body
+      };
+      requests.push(record);
+      const send = (status: number, response: unknown) => {
+        res.writeHead(status, { "content-type": "application/json" });
+        res.end(JSON.stringify(response));
+      };
+      const url = new URL(record.url, "http://127.0.0.1");
+      const path = url.pathname;
+
+      if (path.startsWith("/studio/") && record.auth === "Bearer client-test-token") {
+        return send(403, { error: "forbidden: developer key required" });
+      }
+      if (path === "/studio/accounts" && record.method === "GET") {
+        return send(200, [{ id: "acct_demo", name: "Demo", portalOrigin: "http://127.0.0.1:4174" }]);
+      }
+      if (path === "/studio/accounts" && record.method === "POST") return send(201, { id: "acct-created" });
+      if (path === "/studio/accounts/acct-demo/secrets" && record.method === "PUT") return send(200, { stored: ["ref"] });
+      if (path === "/studio/automations" && record.method === "GET") return send(200, [automation]);
+      if (path === "/studio/automations" && record.method === "POST") {
+        const request = record.body as Record<string, unknown>;
+        return send(201, { ...automation, name: request.name, id: "auto-created" });
+      }
+      if (path === "/studio/automations/auto-1" && record.method === "GET") return send(200, automation);
+      if (path === "/studio/automations/auto-1/recording/start" && record.method === "POST") {
+        return send(201, { id: "recording-1", state: "recording", currentUrl: "http://127.0.0.1:4174/demo-portal" });
+      }
+      if (path === "/studio/automations/auto-1/recording/status" && record.method === "GET") {
+        return send(200, { id: "recording-1", state: "recording" });
+      }
+      if (path === "/studio/automations/auto-1/recording/stop" && record.method === "POST") {
+        return send(200, {
+          id: "recording-1",
+          actionCount: 1,
+          events: [{ seq: 1, kind: "click", target: { label: "Search" } }],
+          warnings: [],
+          suggestion: { checkpoints: [], inputs: [], unbound: [] }
+        });
+      }
+      if (path === "/studio/automations/auto-1/definition" && record.method === "PUT") {
+        return send(200, { ...automation, state: "configuring", checksum: "definition-checksum" });
+      }
+      if (path === "/studio/automations/auto-invalid/definition" && record.method === "PUT") {
+        return send(400, { error: "definition validation failed", issues: [{ path: "workflow", message: "must contain an action" }] });
+      }
+      if (path === "/studio/automations/auto-1/test" && record.method === "POST") return send(202, { id: "test-run-1", state: "queued" });
+      if (path === "/studio/automations/auto-2/test" && record.method === "POST") return send(202, { id: "review-run", state: "queued" });
+      if (path === "/studio/runs/test-run-1" && record.method === "GET") {
+        testPolls += 1;
+        return send(200, {
+          run: {
+            id: "test-run-1",
+            automationId: "auto-1",
+            state: testPolls === 1 ? "running" : "completed",
+            metrics: { engine: "scripted (offline)", modelCalls: 3, actions: 4, elapsedMs: 12 }
+          },
+          verification,
+          data: { memberId: "DEMO-1001" },
+          screenshots: [],
+          timeline: [{ seq: 1, at: "now", event: { type: "action", action: "click" } }]
+        });
+      }
+      if (path === "/studio/runs/review-run" && record.method === "GET") {
+        return send(200, {
+          run: { id: "review-run", state: "needs_review", failure: { reason: "verification rejected" } },
+          verification: { accepted: false, checks: [{ id: "identity", passed: false, detail: "member mismatch" }], reasons: [] },
+          data: null,
+          screenshots: [{}]
+        });
+      }
+      if (path === "/studio/automations/auto-1/publish" && record.method === "POST") {
+        return send(201, { automationId: "auto-1", revision: 1, checksum: "published-checksum", openapiUrl: "http://127.0.0.1:4180/v1/automations/auto-1/openapi.json" });
+      }
+      if (path === "/studio/automations/auto-unready/publish" && record.method === "POST") {
+        return send(409, { error: "only automations in state 'ready' can be published" });
+      }
+      if (path === "/studio/automations/auto-1/new-draft" && record.method === "POST") return send(201, { ...automation, id: "auto-draft" });
+      if (path === "/studio/automations/auto-1/openapi.json" && record.method === "GET") return send(200, { openapi: "3.1.0", paths: {} });
+      if (path === "/studio/automations/auto-1/export" && record.method === "GET") return send(200, { files: { "README.md": "# export" } });
+      if (path === "/studio/api-keys" && record.method === "POST") return send(201, { id: "key-1", token: "newly-created-token" });
+      if (path === "/studio/runs" && record.method === "GET") {
+        return send(200, [{ id: "test-run-1", automationId: "auto-1", state: "completed", kind: "test", revision: 0 }]);
+      }
+      if (path === "/studio/runs/unknown-run" && record.method === "GET") return send(404, { error: "not found" });
+      if (path === "/studio/runs/test-run-1/cancel" && record.method === "POST") return send(202, { ok: true });
+      if (path === "/v1/automations" && record.method === "GET") {
+        return send(200, [{ id: "auto-1", revisions: [{ revision: 1 }] }]);
+      }
+      if (path === "/v1/automations/auto-1/runs" && record.method === "POST") {
+        const reused = publicRunCreated;
+        publicRunCreated = true;
+        return send(reused ? 200 : 202, { id: "public-run-1", state: "queued", reused });
+      }
+      if (path === "/v1/automations/auto-1/runs/public-run-1" && record.method === "GET") {
+        return send(200, {
+          id: "public-run-1",
+          automationId: "auto-1",
+          state: "completed",
+          metrics: { engine: "scripted", modelCalls: 3, actions: 4, elapsedMs: 12 }
+        });
+      }
+      if (path === "/v1/automations/auto-1/runs/public-run-1/result" && record.method === "GET") {
+        return send(200, { runId: "public-run-1", automationId: "auto-1", accepted: true, data: { memberId: "DEMO-1002" }, checks: verification.checks, observedAt: "now" });
+      }
+      return send(404, { error: "not found" });
+    });
+  });
+
+  await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+  const cwd = mkdtempSync(resolve(tmpdir(), "pixie-cli-test-"));
+  writeFileSync(resolve(cwd, "pixie.json"), JSON.stringify({ apiUrl: baseUrl, accountId: "acct_test", clientToken: "client-config-token" }));
+  const previousCwd = process.cwd();
+  const previousEnv = {
+    dev: process.env.GATEWAY_DEV_TOKEN,
+    client: process.env.GATEWAY_CLIENT_TOKEN,
+    browser: process.env.BROWSER
+  };
+  process.chdir(cwd);
+  process.env.GATEWAY_DEV_TOKEN = "dev-test-token";
+  process.env.GATEWAY_CLIENT_TOKEN = "client-test-token";
+  delete process.env.BROWSER;
+  try {
+    await run(baseUrl, requests);
+  } finally {
+    process.chdir(previousCwd);
+    if (previousEnv.dev === undefined) delete process.env.GATEWAY_DEV_TOKEN;
+    else process.env.GATEWAY_DEV_TOKEN = previousEnv.dev;
+    if (previousEnv.client === undefined) delete process.env.GATEWAY_CLIENT_TOKEN;
+    else process.env.GATEWAY_CLIENT_TOKEN = previousEnv.client;
+    if (previousEnv.browser === undefined) delete process.env.BROWSER;
+    else process.env.BROWSER = previousEnv.browser;
+    await new Promise<void>((resolveClose, rejectClose) => server.close((error) => (error ? rejectClose(error) : resolveClose())));
+  }
+}
+
+test("pixie init uses local synthetic defaults, never writes credentials, and refuses overwrite", () => {
   const dir = resolve(mkdtempSync(resolve(tmpdir(), "pixie-init-")), "proj");
   const { lines, out } = capture();
   assert.equal(init(dir, out), 0);
   assert.ok(existsSync(resolve(dir, "pixie.json")));
   assert.ok(!existsSync(resolve(dir, ".env")), "init must not create a secrets file");
-  assert.equal(loadProject(dir).accountId, "acct_todo");
+  assert.equal(loadProject(dir).accountId, "acct_demo");
+  assert.equal(loadProject(dir).portalOrigin, "http://127.0.0.1:4174");
   writeFileSync(resolve(dir, "pixie.json"), JSON.stringify({ accountId: "acct_mine" }));
   assert.equal(init(dir, out), 1);
   assert.equal(loadProject(dir).accountId, "acct_mine", "existing pixie.json untouched");
-  assert.ok(lines.some((l) => l.includes("refusing")));
+  assert.ok(lines.some((line) => line.includes("refusing")));
   assert.equal(readFileSync(resolve(dir, ".env.example"), "utf8").includes("TYPESAFE_API_KEY="), true);
 });
 
-test("pixie doctor reports a missing live model variable as a failure and unreachable services as warnings", async () => {
+test("pixie doctor reports a missing live model variable and unreachable services", async () => {
   const project = { ...loadProject("/nonexistent"), apiUrl: "http://127.0.0.1:1", studioUrl: "http://127.0.0.1:1" };
   const checks = await doctorChecks(project, { PATH: process.env.PATH }, mkdtempSync(resolve(tmpdir(), "pixie-empty-")));
-  const byName = (prefix: string) => checks.find((c) => c.name.startsWith(prefix))!;
+  const byName = (prefix: string) => checks.find((check) => check.name.startsWith(prefix))!;
   assert.deepEqual([byName("TYPESAFE_API_KEY").ok, byName("TYPESAFE_API_KEY").level], [false, "fail"]);
   assert.equal(byName("worker environment").ok, false);
   assert.equal(byName("gateway built").ok, false);
   assert.deepEqual([byName("API at").ok, byName("API at").level], [false, "warn"]);
   const scripted = await doctorChecks({ ...project, engine: "scripted" }, { PATH: process.env.PATH });
-  assert.deepEqual([byName("TYPESAFE_API_KEY").level, scripted.find((c) => c.name.startsWith("TYPESAFE"))!.ok], ["fail", true]);
+  assert.deepEqual([byName("TYPESAFE_API_KEY").level, scripted.find((check) => check.name.startsWith("TYPESAFE"))!.ok], ["fail", true]);
 });
 
-test("pixie test and publish drive the Studio API and surface refusals instead of pretending", async () => {
-  const requests: { method: string; url: string; auth: string | undefined }[] = [];
-  let polls = 0;
-  const server = createServer((req, res) => {
-    requests.push({ method: req.method!, url: req.url!, auth: req.headers.authorization });
-    const send = (status: number, body: unknown) => {
-      res.writeHead(status, { "content-type": "application/json" });
-      res.end(JSON.stringify(body));
-    };
-    if (req.url === "/studio/automations/auto-1/test") return send(202, { id: "run-1", state: "queued" });
-    if (req.url === "/studio/runs/run-1") {
-      polls += 1;
-      return send(200, {
-        run: { id: "run-1", state: polls < 2 ? "running" : "needs_review", failure: { reason: "independent verification rejected the extracted result" } },
-        verification: { accepted: false, checks: [{ id: "mutation:add", passed: false, detail: "count unchanged" }], reasons: [] },
-        data: null,
-        screenshots: [{}]
-      });
+test("all required command shapes reject missing arguments with usage exit code 2", async () => {
+  await withApi(async (_baseUrl, requests) => {
+    const invalid: string[][] = [
+      ["accounts", "add"],
+      ["accounts", "secret", "acct-demo"],
+      ["create"],
+      ["create", "Demo"],
+      ["show"],
+      ["record"],
+      ["record", "start"],
+      ["record", "status"],
+      ["record", "stop"],
+      ["definition"],
+      ["definition", "get"],
+      ["definition", "set", "auto-1"],
+      ["draft"],
+      ["test"],
+      ["publish"],
+      ["run"],
+      ["cancel"],
+      ["invoke", "auto-1"],
+      ["openapi"],
+      ["export"],
+      ["keys"],
+      ["keys", "create"],
+      ["keys", "create", "name"]
+    ];
+    for (const args of invalid) {
+      const { lines, out } = capture();
+      assert.equal(await main(args, out), 2, args.join(" "));
+      assert.ok(lines.some((line) => line.startsWith("ERR usage:")), args.join(" "));
     }
-    if (req.url === "/studio/automations/auto-1/publish") return send(409, { error: "only automations in state 'ready' can be published" });
-    send(404, { error: "not found" });
+    const unknown = capture();
+    assert.equal(await main(["create", "Demo", "--unknown"], unknown.out), 2);
+    assert.ok(unknown.lines.some((line) => line.includes("pixie create:")));
+    assert.equal(requests.length, 0);
   });
-  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
-  const port = (server.address() as { port: number }).port;
-  const cwd = mkdtempSync(resolve(tmpdir(), "pixie-proj-"));
-  writeFileSync(resolve(cwd, "pixie.json"), JSON.stringify({ apiUrl: `http://127.0.0.1:${port}`, accountId: "acct_x" }));
-  const previous = process.cwd();
-  process.chdir(cwd);
-  process.env.GATEWAY_DEV_TOKEN = "tok";
-  try {
-    const t = capture();
-    assert.equal(await main(["test", "auto-1", "--input", "{\"title\":\"pixie-demo x\"}"], t.out), 1);
-    assert.ok(t.lines.some((l) => l === "state: needs_review"));
-    assert.ok(t.lines.some((l) => l.includes("FAIL  mutation:add count unchanged")));
-    assert.ok(!t.lines.some((l) => l.startsWith("data:")), "unaccepted runs expose no data");
-    assert.equal(requests[0]!.auth, "Bearer tok");
+});
 
-    const p = capture();
-    assert.equal(await main(["publish", "auto-1"], p.out), 1);
-    assert.ok(p.lines.some((l) => l.includes("publish refused: HTTP 409")));
+test("Studio commands use the developer token, JSON output is API JSON, and unsafe secrets are not printed", async () => {
+  await withApi(async (_baseUrl, requests) => {
+    const cases: string[][] = [
+      ["--json", "accounts", "list"],
+      ["accounts", "add", "--name", "Demo account", "--origin", "http://127.0.0.1:4174", "--id", "acct-demo", "--json"],
+      ["create", "Synthetic eligibility", "--url", "http://127.0.0.1:4174/demo-portal", "--template", "eligibility-overview", "--allowed-origin", "http://127.0.0.1:4174", "--json"],
+      ["show", "auto-1", "--json"],
+      ["record", "start", "auto-1", "--json"],
+      ["record", "status", "auto-1", "--json"],
+      ["record", "stop", "auto-1", "--json"],
+      ["definition", "get", "auto-1", "--json"],
+      ["definition", "set", "auto-1", "definition.json", "--json"],
+      ["draft", "auto-1", "--json"],
+      ["test", "auto-1", "--follow", "--json"],
+      ["publish", "auto-1", "--json"],
+      ["runs", "--automation", "auto-1", "--json"],
+      ["run", "test-run-1", "--events", "--json"],
+      ["cancel", "test-run-1", "--json"],
+      ["openapi", "auto-1", "--json"],
+      ["export", "auto-1", "--json"],
+      ["open", "auto-1", "--json"],
+      ["open", "test-run-1", "--json"]
+    ];
+    writeFileSync(resolve(process.cwd(), "definition.json"), JSON.stringify(automation.definition));
+    for (const args of cases) {
+      const { lines, out } = capture();
+      const code = await main(args, out);
+      assert.equal(code, 0, args.join(" "));
+      assert.equal(lines.length, 1, args.join(" "));
+      assert.doesNotThrow(() => JSON.parse(lines[0]!), args.join(" "));
+    }
+    const create = requests.find((request) => request.method === "POST" && request.url === "/studio/automations")!;
+    assert.deepEqual(create.body, {
+      name: "Synthetic eligibility",
+      startUrl: "http://127.0.0.1:4174/demo-portal",
+      template: "eligibility-overview",
+      allowedOrigins: ["http://127.0.0.1:4174"]
+    });
+    assert.ok(requests.every((request) => !request.url.startsWith("/studio/") || request.auth === "Bearer dev-test-token"));
+    const { lines: keyLines, out: keyOut } = capture();
+    assert.equal(await main(["keys", "create", "one-time", "--role", "client"], keyOut), 0);
+    assert.equal(keyLines.join("\n").split("newly-created-token").length - 1, 1);
+    assert.doesNotMatch(keyLines.join("\n"), /dev-test-token|client-test-token/);
+    const jsonKey = capture();
+    assert.equal(await main(["keys", "create", "json-key", "--role", "developer", "--json"], jsonKey.out), 0);
+    assert.ok(jsonKey.lines.some((line) => line.includes("shown once")));
+    const jsonKeyBody = jsonKey.lines.find((line) => line.startsWith("{"))!;
+    const jsonKeyResult = JSON.parse(jsonKeyBody) as { token: string };
+    assert.equal(jsonKeyResult.token, "newly-created-token");
+  });
+});
 
-    const u = capture();
-    assert.equal(await main(["record"], u.out), 2);
-    assert.ok(u.lines.some((l) => l.includes("unknown command")));
-  } finally {
-    process.chdir(previous);
-    server.close();
-  }
+test("test --follow reports state, verification, and API-labelled scripted decisions", async () => {
+  await withApi(async (_baseUrl, requests) => {
+    const { lines, out } = capture();
+    assert.equal(await main(["test", "auto-1", "--account", "acct_demo", "--input", "{\"memberId\":\"DEMO-1001\"}", "--follow"], out), 0);
+    assert.ok(lines.some((line) => line === "state: completed"));
+    assert.ok(lines.some((line) => line.includes("verification: accepted (16/16 checks passed)")));
+    assert.ok(lines.some((line) => line.includes("scripted decisions=3")));
+    const start = requests.find((request) => request.url === "/studio/automations/auto-1/test")!;
+    assert.deepEqual(start.body, { accountId: "acct_demo", input: { memberId: "DEMO-1001" } });
+  });
+});
+
+test("test --follow returns nonzero for needs_review and never prints unaccepted data", async () => {
+  await withApi(async () => {
+    const { lines, out } = capture();
+    assert.equal(await main(["test", "auto-2", "--follow"], out), 1);
+    assert.ok(lines.some((line) => line === "state: needs_review"));
+    assert.ok(lines.some((line) => line.includes("verification: rejected")));
+    assert.ok(!lines.some((line) => line.startsWith("data:")));
+  });
+});
+
+test("negative cases surface API validation, role rejection, unknown runs, and invalid definition files", async () => {
+  await withApi(async (_baseUrl, requests) => {
+    const previousDevToken = process.env.GATEWAY_DEV_TOKEN;
+    process.env.GATEWAY_DEV_TOKEN = "client-test-token";
+    const rejected = capture();
+    assert.equal(await main(["accounts", "list"], rejected.out), 1);
+    assert.ok(rejected.lines.some((line) => line.includes("HTTP 403")));
+    assert.doesNotMatch(rejected.lines.join("\n"), /client-test-token/);
+    if (previousDevToken === undefined) delete process.env.GATEWAY_DEV_TOKEN;
+    else process.env.GATEWAY_DEV_TOKEN = previousDevToken;
+
+    const unknownRun = capture();
+    assert.equal(await main(["run", "unknown-run"], unknownRun.out), 1);
+    assert.ok(unknownRun.lines.some((line) => line.includes("HTTP 404: not found")));
+
+    const invalidFile = resolve(process.cwd(), "invalid-definition.json");
+    writeFileSync(invalidFile, "{");
+    const invalid = capture();
+    assert.equal(await main(["definition", "set", "auto-1", invalidFile], invalid.out), 1);
+    assert.ok(invalid.lines.some((line) => line.includes("cannot read definition file")));
+    assert.ok(!requests.some((request) => request.url.endsWith("/definition")));
+
+    const file = resolve(process.cwd(), "bad-schema.json");
+    writeFileSync(file, JSON.stringify({ invalid: true }));
+    const validation = capture();
+    assert.equal(await main(["definition", "set", "auto-invalid", file], validation.out), 1);
+    assert.ok(validation.lines.some((line) => line.includes("definition validation failed")));
+    assert.ok(validation.lines.some((line) => line.includes("workflow: must contain an action")));
+  });
+});
+
+test("invoke uses the client token, follows accepted results, and reuses an idempotency key", async () => {
+  await withApi(async (_baseUrl, requests) => {
+    const args = [
+      "invoke", "auto-1", "--input", "{\"memberId\":\"DEMO-1002\"}", "--account", "acct_demo",
+      "--revision", "1", "--idempotency-key", "same-key", "--follow", "--json"
+    ];
+    for (let index = 0; index < 2; index += 1) {
+      const { lines, out } = capture();
+      assert.equal(await main(args, out), 0);
+      const result = JSON.parse(lines[0]!) as { runId: string; accepted: boolean; checks: unknown[] };
+      assert.equal(result.runId, "public-run-1");
+      assert.equal(result.accepted, true);
+      assert.equal(result.checks.length, 16);
+    }
+    const invokes = requests.filter((request) => request.method === "POST" && request.url === "/v1/automations/auto-1/runs");
+    assert.equal(invokes.length, 2);
+    assert.equal(invokes[0]!.idempotencyKey, "same-key");
+    assert.equal(invokes[1]!.idempotencyKey, "same-key");
+    assert.ok(invokes.every((request) => request.auth === "Bearer client-test-token"));
+    assert.deepEqual(invokes[0]!.body, { revision: 1, accountId: "acct_demo", input: { memberId: "DEMO-1002" } });
+  });
+});
+
+test("client token can come from project config, and human key output reveals only the new token once", async () => {
+  await withApi(async (_baseUrl, requests) => {
+    const previous = process.env.GATEWAY_CLIENT_TOKEN;
+    delete process.env.GATEWAY_CLIENT_TOKEN;
+    const { out } = capture();
+    assert.equal(await main(["invoke", "auto-1", "--input", "{}", "--revision", "1"], out), 0);
+    assert.equal(requests.at(-1)?.auth, "Bearer client-config-token");
+    if (previous === undefined) delete process.env.GATEWAY_CLIENT_TOKEN;
+    else process.env.GATEWAY_CLIENT_TOKEN = previous;
+
+    const key = capture();
+    assert.equal(await main(["keys", "create", "one-time", "--role", "developer"], key.out), 0);
+    assert.equal(key.lines.join("\n").split("newly-created-token").length - 1, 1);
+    assert.ok(key.lines.some((line) => line.includes("shown once")));
+  });
 });
