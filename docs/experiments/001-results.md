@@ -151,4 +151,11 @@ Use only the explicitly approved TYPESAFE and OpenAI credentials, retain
 sanitized traces, and stop after that single repair. No hosted deployment or
 real website is proposed.
 
-**COST_ESTIMATE: TODO — fill in before requesting approval.**
+**Cost bound (call caps, not a dollar quote):** at most 4 Ultrafast authoring
+sessions x 30 model decisions = 120 Ultrafast decision calls, plus at most 4
+text-helper calls per session (16), plus 1 coding-model repair proposal (at most
+3 attempts). The hard cap is about 140 model calls, enforced and counted at the
+network layer, and the run aborts at the cap. No browser-provider charges, because
+it uses local Chrome. Dollar cost depends on the operator's current TYPESAFE/OpenAI
+pricing and must be confirmed from their billing pages before approval. This
+document makes no invented cost claim.
