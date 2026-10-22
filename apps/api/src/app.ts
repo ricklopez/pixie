@@ -1,0 +1,57 @@
+import Fastify, { type FastifyInstance } from "fastify";
+import type { DatabaseSync } from "node:sqlite";
+import { createApiKey } from "./auth.js";
+import { now } from "./db.js";
+import { RunManager, type RunManagerOptions } from "./runs.js";
+import { registerStudioRoutes } from "./studio.js";
+import { registerV1Routes } from "./v1.js";
+
+export interface AppOptions extends Omit<RunManagerOptions, "db"> {
+  db: DatabaseSync;
+  cdpUrl: (tenantId: string) => Promise<string>;
+  /** Browser profiles currently launched (for diagnostics); tenant-scoped filtering happens in the route. */
+  browserProfiles?: () => { name: string; cdpUrl: string; userDataDir: string }[];
+  allowLoopback: boolean;
+  publicBaseUrl: string;
+  logger?: boolean;
+}
+
+export interface BootstrapTokens {
+  developer: string;
+  client: string;
+  otherTenantClient: string;
+}
+
+/** Creates the demo tenants once. Tokens come from the environment for local use and are never logged. */
+export function bootstrap(db: DatabaseSync, tokens: BootstrapTokens, portalOrigin: string) {
+  const exists = db.prepare(`SELECT 1 FROM tenants WHERE id = 'tenant_demo'`).get();
+  if (exists) return;
+  db.prepare(`INSERT INTO tenants (id, name) VALUES ('tenant_demo', 'Demo clinic group'), ('tenant_other', 'Unrelated tenant')`).run();
+  createApiKey(db, "tenant_demo", "studio developer", "developer", tokens.developer);
+  createApiKey(db, "tenant_demo", "demo client", "client", tokens.client);
+  createApiKey(db, "tenant_other", "other client", "client", tokens.otherTenantClient);
+  db.prepare(`INSERT INTO accounts (id, tenant_id, name, portal_origin, created_at) VALUES (?, ?, ?, ?, ?)`).run("acct_demo", "tenant_demo", "Synthetic portal account", portalOrigin, now());
+  db.prepare(`INSERT INTO accounts (id, tenant_id, name, portal_origin, created_at) VALUES (?, ?, ?, ?, ?)`).run("acct_other", "tenant_other", "Other tenant account", portalOrigin, now());
+}
+
+export function buildApp(options: AppOptions): { app: FastifyInstance; runs: RunManager; shutdown: () => Promise<void> } {
+  const app = Fastify({ logger: options.logger ?? false, bodyLimit: 1_000_000 });
+  const runs = new RunManager({ db: options.db, runner: options.runner, evidenceRoot: options.evidenceRoot, selectEngine: options.selectEngine });
+  app.get("/health", async () => ({ ok: true, time: now() }));
+  const studio = registerStudioRoutes(app, {
+    runs,
+    cdpUrl: options.cdpUrl,
+    browserProfiles: options.browserProfiles ?? (() => []),
+    allowLoopback: options.allowLoopback,
+    publicBaseUrl: options.publicBaseUrl
+  });
+  registerV1Routes(app, { runs, publicBaseUrl: options.publicBaseUrl, sendEvidenceFile: studio.sendEvidenceFile });
+  return {
+    app,
+    runs,
+    shutdown: async () => {
+      await studio.stopAllRecordings();
+      await app.close();
+    }
+  };
+}

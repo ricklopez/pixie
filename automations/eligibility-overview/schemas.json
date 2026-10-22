@@ -1,0 +1,86 @@
+{
+  "checksum": "0aea3a8f8a747025e6d2d84e32125ab8785ef46757d0546234cee0f7b6ac8585",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "memberId": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Synthetic member identifier, e.g. DEMO-1001"
+      }
+    },
+    "required": [
+      "memberId"
+    ],
+    "additionalProperties": false
+  },
+  "outputSchema": {
+    "type": "object",
+    "properties": {
+      "memberId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "eligibilityStatus": {
+        "type": "string",
+        "minLength": 1
+      },
+      "plan": {
+        "type": "string",
+        "minLength": 1
+      },
+      "effectiveFrom": {
+        "type": "string",
+        "format": "date"
+      },
+      "effectiveTo": {
+        "type": "string",
+        "format": "date"
+      },
+      "portalAsOf": {
+        "type": "string",
+        "format": "date"
+      },
+      "annualMaximum": {
+        "type": "number"
+      },
+      "annualMaximumRemaining": {
+        "type": "number"
+      },
+      "annualMaximumPeriod": {
+        "type": "string",
+        "minLength": 1
+      },
+      "deductible": {
+        "type": "number"
+      },
+      "deductibleRemaining": {
+        "type": "number"
+      },
+      "deductibleNetwork": {
+        "type": "string",
+        "minLength": 1
+      },
+      "observedAt": {
+        "type": "string",
+        "format": "date-time"
+      }
+    },
+    "required": [
+      "memberId",
+      "eligibilityStatus",
+      "plan",
+      "effectiveFrom",
+      "effectiveTo",
+      "portalAsOf",
+      "annualMaximum",
+      "annualMaximumRemaining",
+      "annualMaximumPeriod",
+      "deductible",
+      "deductibleRemaining",
+      "deductibleNetwork",
+      "observedAt"
+    ],
+    "additionalProperties": false
+  }
+}

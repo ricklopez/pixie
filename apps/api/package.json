@@ -1,0 +1,21 @@
+{
+  "name": "@gateway/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "node dist/main.js",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test --import tsx test/*.test.ts"
+  },
+  "dependencies": {
+    "@gateway/recorder": "*",
+    "fastify": "^5.6.2",
+    "@gateway/definition": "*"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.6"
+  }
+}
