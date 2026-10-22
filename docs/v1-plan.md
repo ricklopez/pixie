@@ -15,6 +15,51 @@ CLI first: initialize a project, define an operation, connect an account, genera
 for live-session handoff, contract review, evidence, publishing, API exploration, and repair approval. CLI syntax
 in previews is illustrative until implementation is approved. A clickable concept is not the product implementation.
 
+## Domain architecture: models, repositories, browser adapters
+
+V1 adopts these boundaries, inspired by LoopBack. This is an architectural decision, not a decision to depend on
+LoopBack or implement a general ORM. Database connectors and external API adapters are next-phase scope.
+
+| Concept | V1 invoice example | Responsibility |
+|---|---|---|
+| Model / entity | `Invoice` with `id`, `amount`, `currency`, `dueDate` | Versioned data shape and stable identity within its connection/account |
+| Operation contract | `list-overdue-invoices(customer)` → `Invoice[]` | Input/output schemas, authorization, allowed effects, freshness, completeness, verification, run outcomes |
+| Repository | `InvoiceRepository.listOverdue(customer, context)` | Typed business-facing method; exposes only supported operations |
+| Browser adapter | `AtlasInvoiceBrowserAdapter` | Implements that method using a versioned script and an authorized connection |
+| Browser provider | Local Chrome or Browserbase | Browser/session infrastructure; separate from domain adapter behavior |
+| API bindings | REST/OpenAPI and MCP | Map requests to the same operation contract and repository method |
+
+The automation implements a repository operation; it is not itself the Invoice entity. Multiple scripts may implement
+different repository methods. Model schema is only the data portion of the contract. The runtime must still enforce
+identity, scope, complete pagination, freshness, and accepted/failed/awaiting_user/needs_review outcomes. A repository
+method may yield a durable run handle, not an immediate array; final accepted data must match the declared output.
+
+Keep model version, operation contract version, and adapter/script revision distinct. Publish pins all three plus
+verification checks and dependencies. A locator repair updates the adapter revision while preserving the model and
+operation contract. Breaking field changes or business semantics require explicit contract review and versioning.
+
+For v1, implement only explicitly declared methods such as `listOverdue`. Do not generate create/update/delete merely
+because a model exists. No arbitrary SQL-style filters, joins, transactions, or full CRUD promise for browser sources.
+Unsupported methods are absent from REST/MCP. Multi-step business commands can use a service rather than forced CRUD.
+Tenant and connection identity come from authorized execution context, not a caller-supplied unrestricted account ID.
+
+### Next phase: database connectors
+
+Leave an adapter boundary but do not build database connectors in v1. A future database can either be an authoritative
+source for a repository method or hold a synchronized copy of browser results. These require separate policies:
+source identity, field mapping, synchronization, conflicts, deletions, timestamps, and explicit freshness guarantees.
+Never silently replace a live-portal result with cached data. Source substitution requires the same acceptance suite.
+Pixie's internal database for run/deployment metadata remains in v1; it is not a user-facing domain database connector.
+
+### Architecture acceptance gates
+
+- REST and MCP invoke the same repository operation, model schema, and verification contract.
+- The browser adapter receives scoped execution context; transport handlers do not embed portal-specific selectors.
+- Unsupported CRUD operations and filters are not advertised or callable.
+- Published artifacts identify model version, contract version, adapter revision, and connection requirements.
+- A reviewed locator repair preserves model and contract; changing either requires a visible compatibility decision.
+- Test fixtures can substitute an adapter for contract tests; no database connector implementation is required.
+
 ## Deployment decision: local first, Render + Browserbase
 
 Selected v1 target: Render hosts the Pixie API and execution worker; Browserbase hosts cloud browser sessions
@@ -38,7 +83,7 @@ Provider keys are separate from caller authentication and website login/MFA. The
 2. Select the configured Render + Browserbase target. Preflight checks credentials, permissions, dependencies,
    hosted reachability, and connection readiness. Cloud login may require a separate human handoff; never silently
    upload a local Chrome profile or assume local login transfers to Browserbase.
-3. Click **Publish API**. Package the exact tested script, contract, checks, and pinned dependencies as an immutable
+3. Click **Publish API**. Package the model version, repository operation, browser adapter/script revision, contract, checks, and pinned dependencies as an immutable
    revision; deploy it into the operator's Render runtime. Reuse that runtime across operations rather than provision
    a server for every endpoint. Generated/user scripts need isolation, resource bounds, and scoped secrets.
 4. Run a hosted smoke test against the authorized Browserbase connection. Show preflight, deployment, test, and
@@ -127,7 +172,8 @@ release after completion, Stop, timeout, failed startup, and worker crash. Conte
 Use a clearly labeled synthetic supplier portal with two accounts, invoice pagination, login expiry, and controlled
 layout variants. No patient data, real credentials, or payment execution.
 
-1. CLI: initialize a project and describe `list-overdue-invoices` for a customer; show proposed contract and checks.
+1. CLI: initialize a project and describe `list-overdue-invoices` for a customer. Review the Invoice model,
+   InvoiceRepository.listOverdue method, Atlas browser adapter, operation contract, and checks in Studio.
 2. Open Studio; the first run waits for authentication. Open the live session, Take control, simulate/sign in on the
    synthetic portal, and Resume. Verify the correct account and return invoices with evidence.
 3. Generate/test locally with varied inputs and freeze the contract. Configure user-owned Render and Browserbase
@@ -144,7 +190,7 @@ portal; the fixture demonstrates mechanics, not universal site compatibility or 
 ## Build sequence after explicit approval
 
 A. Local script-generation/repair experiment. B. Browserbase persistence and exclusive handoff spike. Both must pass.
-C. Shared contracts, durable runs, connection authorization, REST/OpenAPI and MCP. D. CLI-to-Studio experience.
+C. Models, operation contracts, repositories, browser adapter boundary, durable runs, connection authorization, REST/OpenAPI and MCP. D. CLI-to-Studio experience.
 E. Render deployment adapter, secure bring-your-own-key setup, gated publication and rollback.
 F. Regression evidence, failure recovery, demo rehearsal, and authorized real-portal validation.
 

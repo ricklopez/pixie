@@ -68,6 +68,18 @@ settings. Configure providers once through secure setup; keep keys out of fronte
 You own the infrastructure accounts and charges. Local browser login is not automatically copied to the cloud.
 This is the selected design, not an implemented deployment feature; the clickable demo uses no real keys or services.
 
+## Models, repositories, and adapters
+
+V1 separates the **Invoice model** (data shape), **operation contract** (inputs, outputs, permissions and verification),
+**InvoiceRepository.listOverdue** (business interface), and **browser adapter** (verified script implementation).
+REST and MCP use the same repository operation. Publish pins model/contract versions and the adapter revision;
+reviewed locator repairs preserve the public contract. This borrows LoopBack architectural boundaries without
+committing to LoopBack as a dependency.
+
+Only supported methods are exposed; defining a model does not generate unrestricted CRUD. Database connectors
+and external API adapters are next-phase work. A future database source or synchronized copy must explicitly
+define identity, freshness and consistency. The internal run-state database is still required in v1.
+
 ## Contracts and maintenance
 
 | Change | Proposed treatment |
