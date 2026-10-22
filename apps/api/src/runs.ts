@@ -246,7 +246,7 @@ export class RunManager {
       (this.db.prepare(`SELECT ref, value FROM account_secrets WHERE account_id = ?`).all(run.account_id) as { ref: string; value: string }[]).map((r) => [r.ref, r.value])
     );
     const input = JSON.parse(run.input) as Record<string, string | number | boolean>;
-    const selection = this.options.selectEngine(definition, input);
+    const selection = this.requestedSelections.get(runId) ?? this.options.selectEngine(definition, input);
     const command: WorkerCommand = {
       type: "run",
       runId,

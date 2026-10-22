@@ -185,8 +185,8 @@ export function prepareContractPublication(
     operation_version_id: operationVersionId,
     revision: version.adapterRevision,
     definition_hash: definitionHash,
-    engine: definition.engine,
-    engine_revision: definition.engineRevision,
+    engine: adapterSource ? "script" : definition.engine,
+    engine_revision: adapterSource ? "recorded-adapter-v1" : definition.engineRevision,
     generator: definition.adapterGenerator ?? (definition.sourceRecordingId ? "recorded" : "manual"),
     source: adapterSource ?? null,
     automation_id: automationId,
@@ -366,7 +366,7 @@ export function retireOperation(db: DatabaseSync, tenantId: string, operationVer
 
 export function operationBinding(db: DatabaseSync, tenantId: string, repository: string, method: string, major: number) {
   return db.prepare(`SELECT ov.*, r.name AS repository_name, ar.id AS adapter_revision_id, ar.revision AS adapter_revision,
-      ar.automation_id, ar.automation_revision, ar.hash AS adapter_hash,
+      ar.automation_id, ar.automation_revision, ar.hash AS adapter_hash, ar.engine, ar.source,
       EXISTS (SELECT 1 FROM retired_operations ro WHERE ro.operation_version_id = ov.id) AS retired
     FROM repositories r
     JOIN publication_bindings b ON b.repository_id = r.id

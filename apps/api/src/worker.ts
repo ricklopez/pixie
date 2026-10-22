@@ -55,6 +55,7 @@ export type WorkerEvent =
   | { type: "action"; checkpointId: string; step: number; action: string | null; kind: string | null; boundInput: string | null; page_changed: boolean; url: string; typedLength: number }
   | { type: "stale_page"; checkpointId: string; reason: string; attempt: number }
   | { type: "policy_rejected"; checkpointId: string; code: string; reason: string; action: string | null; kind: string | null }
+  | { type: "script_failure"; reason: string; domExcerpt: string }
   | { type: "screenshot"; checkpointId: string; label: string; ref: string }
   | { type: "auth_required"; signal: unknown; url: string }
   | { type: "mutation_check"; checkpointId: string; kind: "create" | "update" | "delete"; ok: boolean; reason: string | null; before: number; after: number }
@@ -72,6 +73,8 @@ export interface WorkerRunner {
 }
 
 export class ScriptRunner implements WorkerRunner {
+  constructor(private readonly cdpUrl?: (accountId: string) => Promise<string>) {}
+
   start(command: WorkerCommand, onEvent: (event: WorkerEvent) => void, cdpUrlOverride?: string): WorkerHandle {
     const started = Date.now();
     let cancelled = false;
@@ -79,9 +82,10 @@ export class ScriptRunner implements WorkerRunner {
       if (cancelled) return { type: "finished", outcome: "cancelled", reason: "cancelled", elapsedMs: 0, modelCalls: 0, providerCalls: 0, actions: 0 } satisfies FinishedEvent;
       if (!command.adapterSource) return { type: "finished", outcome: "failed", reason: "script adapter source is missing", elapsedMs: 0, modelCalls: 0, providerCalls: 0, actions: 0 } satisfies FinishedEvent;
       onEvent({ type: "started", runId: command.runId, engine: "script" });
+      const cdpUrl = cdpUrlOverride ?? await this.cdpUrl?.(command.accountId) ?? "";
       const result = await runScript({
         source: command.adapterSource,
-        cdpUrl: cdpUrlOverride ?? "",
+        cdpUrl,
         input: command.input,
         startUrl: command.definition.startUrl,
         allowedOrigins: command.definition.allowedOrigins,
@@ -106,7 +110,10 @@ export class ScriptRunner implements WorkerRunner {
         providerCalls: 0,
         actions: result.actions
       };
-      if (result.error) onEvent({ type: "policy_rejected", checkpointId: "script", code: "script_failed", reason: result.error, action: null, kind: null });
+      if (result.error) {
+        onEvent({ type: "policy_rejected", checkpointId: "script", code: "script_failed", reason: result.error, action: null, kind: null });
+        onEvent({ type: "script_failure", reason: result.error, domExcerpt: result.domExcerpt ?? "" });
+      }
       onEvent(event);
       return event;
     })();

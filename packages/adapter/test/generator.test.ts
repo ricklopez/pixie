@@ -7,7 +7,7 @@ const definition = {
   startUrl: "http://127.0.0.1:4174",
   allowedOrigins: ["http://127.0.0.1:4174"],
   inputs: [{ name: "memberId", type: "string", required: true, binding: { targetLabel: "Member ID" } }],
-  output: { type: "object", fields: { ok: { type: "boolean" } } },
+  outputs: [{ name: "observedAt", type: "date", required: true, extractor: { kind: "observedAt" } }],
   assertions: [],
   effect: "read",
   authRequiredSignals: [],
@@ -29,6 +29,7 @@ test("adapter generation is deterministic and parameterized", () => {
   assert.equal(first.source, second.source);
   assert.equal(first.hash, second.hash);
   assert.match(first.source, /input\["memberId"\]/);
+  assert.match(first.source, /extractOutputs/);
   assert.equal(first.unsupported.length, 0);
 });
 
@@ -36,4 +37,10 @@ test("unsupported events fail closed", () => {
   const generated = generateAdapter({ events: [{ seq: 1, at: 0, kind: "unsupported", url: "", reason: "popup" }] } as never, definition);
   assert.equal(generated.unsupported.length, 1);
   assert.equal(generated.source, "");
+});
+
+test("missing output locators are reported instead of producing a partial adapter", () => {
+  const generated = generateAdapter(recording, { ...definition, outputs: [] } as never);
+  assert.equal(generated.source, "");
+  assert.equal(generated.unsupported[0]?.kind, "output");
 });

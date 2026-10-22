@@ -59,6 +59,18 @@ function eventSource(event: RecordedEvent, definition: AutomationDefinition, uns
 export function generateAdapter(recording: RecordingInput, definition: AutomationDefinition): GeneratedAdapter {
   const unsupported: UnsupportedStep[] = [];
   const events = [...recording.events].sort((a, b) => a.seq - b.seq);
+  const outputs = definition.outputs ?? [];
+  if (!outputs.length) unsupported.push({ seq: Number.MAX_SAFE_INTEGER, kind: "output", reason: "definition has no supported output locators" });
+  const extractors = outputs.map((field) => {
+    if (field.extractor.kind === "listItems" && !definition.lists?.[field.extractor.list]) {
+      unsupported.push({
+        seq: Number.MAX_SAFE_INTEGER,
+        kind: "output",
+        reason: `output '${field.name}' has no reviewed list locator`
+      });
+    }
+    return field;
+  });
   const body = events.flatMap((event) => {
     const line = eventSource(event, definition, unsupported);
     return line ? [`  ${line}`, "  await checkpoint(page);"] : [];
@@ -66,11 +78,11 @@ export function generateAdapter(recording: RecordingInput, definition: Automatio
   const source = unsupported.length ? "" : [
     `// ${GENERATOR_ID}@${GENERATOR_VERSION}`,
     `// definition-sha256: ${sha256(canonicalJson(definition))}`,
-    'import { locate, checkpoint } from "@gateway/adapter/runtime";',
+    'import { locate, checkpoint, extractOutputs } from "@gateway/adapter/runtime";',
     "",
     "export async function run(page, input) {",
     ...body,
-    "  return undefined;",
+    `  return await extractOutputs(page, ${JSON.stringify(extractors)}, ${JSON.stringify(definition.lists ?? {})});`,
     "}",
     ""
   ].join("\n");

@@ -48,7 +48,7 @@ if (engine === "live" && !env.TYPESAFE_API_KEY) {
 }
 
 const runner = new SubprocessRunner({ workerDir: resolve(root, "workers/jev"), cdpUrl: (accountId) => browsers.cdpUrlFor(accountId) });
-const scriptRunner = new ScriptRunner();
+const scriptRunner = new ScriptRunner((accountId) => browsers.cdpUrlFor(accountId));
 const { app, shutdown } = buildApp({
   db,
   runner,
@@ -61,6 +61,8 @@ const { app, shutdown } = buildApp({
   allowLoopback: env.GATEWAY_ALLOW_LOOPBACK !== "0",
   publicBaseUrl,
   studioBaseUrl,
+  fireworksApiKey: env.FIREWORKS_API_KEY,
+  fireworksEndpoint: env.PIXIE_FIREWORKS_ENDPOINT,
   logger: env.GATEWAY_LOG !== "0",
   selectEngine: (definition, input) =>
     engine === "live"

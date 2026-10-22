@@ -7,6 +7,14 @@ import type { ScriptRunRequest, ScriptRunResult } from "./types.js";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
+export function scriptChildEnvironment(request: ScriptRunRequest, outputPath: string): NodeJS.ProcessEnv {
+  return {
+    BU_CDP_URL: request.cdpUrl,
+    PIXIE_SCRIPT_OUTPUT: outputPath,
+    PIXIE_SCRIPT_INPUT: JSON.stringify(request.input)
+  };
+}
+
 export async function runScript(request: ScriptRunRequest): Promise<ScriptRunResult> {
   const dir = resolve(packageRoot, ".runs", `pixie-script-${randomUUID()}`);
   await mkdir(dir, { recursive: true });
@@ -26,11 +34,7 @@ export async function runScript(request: ScriptRunRequest): Promise<ScriptRunRes
   return await new Promise<ScriptRunResult>((resolveResult) => {
     const child = spawn(process.execPath, args, {
       cwd: resolve(packageRoot, "../.."),
-      env: {
-        BU_CDP_URL: request.cdpUrl,
-        PIXIE_SCRIPT_OUTPUT: outputPath,
-        PIXIE_SCRIPT_INPUT: JSON.stringify(request.input)
-      },
+      env: scriptChildEnvironment(request, outputPath),
       stdio: ["ignore", "ignore", "pipe"]
     });
     let stderr = "";

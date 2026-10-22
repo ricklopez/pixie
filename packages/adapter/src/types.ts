@@ -37,6 +37,7 @@ export interface ScriptRunRequest {
 export interface ScriptRunResult {
   result?: unknown;
   error?: string;
+  domExcerpt?: string;
   actions: number;
   providerCalls: 0;
   attemptedSecrets: boolean;

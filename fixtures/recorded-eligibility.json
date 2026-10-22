@@ -35,6 +35,23 @@
         "text": "Search",
         "selectorHints": []
       }
+    },
+    {
+      "seq": 3,
+      "at": 20,
+      "kind": "click",
+      "url": "http://127.0.0.1:4174/demo-portal/members?memberId=DEMO-1001",
+      "target": {
+        "tag": "a",
+        "role": "link",
+        "label": null,
+        "name": "View benefits overview",
+        "id": null,
+        "placeholder": null,
+        "inputType": null,
+        "text": "View benefits overview",
+        "selectorHints": []
+      }
     }
   ]
 }

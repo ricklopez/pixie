@@ -53,6 +53,7 @@ const HELP = `pixie — local developer CLI for the Pixie gateway (runs from thi
   pixie test <id> [--account <id>] [--input '<json>'] [--follow]
   pixie generate <id> [--recording <file>]
   pixie test <id> --engine script
+  pixie portal label-variant --enabled|--disabled
   pixie repair <id> --run <runId> [--source file | --model]
   pixie repairs <id>
   pixie approve <repairId>
@@ -1128,6 +1129,8 @@ export async function main(argv: string[], out: Out = stdio): Promise<number> {
     model?: boolean;
     reason?: string;
     recording?: string;
+    enabled?: boolean;
+    disabled?: boolean;
   }
   let parsed: { values: CliOptions; positionals: string[] };
   try {
@@ -1140,6 +1143,8 @@ export async function main(argv: string[], out: Out = stdio): Promise<number> {
         automation: { type: "string" },
         "allowed-origin": { type: "string", multiple: true },
         events: { type: "boolean" },
+        enabled: { type: "boolean" },
+        disabled: { type: "boolean" },
         follow: { type: "boolean" },
         headless: { type: "boolean" },
         help: { type: "boolean", short: "h" },
@@ -1205,6 +1210,20 @@ export async function main(argv: string[], out: Out = stdio): Promise<number> {
         return doctor(project, out, jsonMode);
       case "dev":
         return dev(project, { scripted: values.scripted === true, headless: values.headless === true, portal: values.portal === true }, out);
+      case "portal": {
+        if (arg !== "label-variant" || values.enabled === values.disabled) return usage(out, "pixie portal label-variant --enabled|--disabled");
+        const response = await fetch(`${project.portalOrigin}/demo-portal/admin/label-variant`, {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({ enabled: String(values.enabled === true) })
+        });
+        if (!response.ok) {
+          out.error(`pixie portal: HTTP ${response.status}`);
+          return 1;
+        }
+        out.log(`portal label variant ${values.enabled ? "enabled" : "disabled"}`);
+        return 0;
+      }
       case "list":
         return list(project, out, jsonMode);
       case "accounts":
@@ -1269,7 +1288,7 @@ export async function main(argv: string[], out: Out = stdio): Promise<number> {
       }
       case "repairs":
         if (!required(arg, "pixie repairs <automationId>")) return 2;
-        return adapterRequest(project, "GET", `/studio/automations/${encodeURIComponent(arg)}/repairs`, {}, out, jsonMode);
+        return adapterRequest(project, "GET", `/studio/automations/${encodeURIComponent(arg)}/repairs`, undefined, out, jsonMode);
       case "approve":
         if (!required(arg, "pixie approve <repairId>")) return 2;
         return adapterRequest(project, "POST", `/studio/repairs/${encodeURIComponent(arg)}/approve`, {}, out, jsonMode);

@@ -18,6 +18,8 @@ export interface AppOptions extends Omit<RunManagerOptions, "db"> {
   browserProfiles?: () => { name: string; cdpUrl: string; userDataDir: string }[];
   allowLoopback: boolean;
   publicBaseUrl: string;
+  fireworksApiKey?: string;
+  fireworksEndpoint?: string;
   studioBaseUrl?: string;
   logger?: boolean;
 }
@@ -59,7 +61,9 @@ export function buildApp(options: AppOptions): { app: FastifyInstance; runs: Run
     browserProfiles: options.browserProfiles ?? (() => []),
     allowLoopback: options.allowLoopback,
     publicBaseUrl: options.publicBaseUrl,
-    browserbaseProvider: options.browserbaseProvider
+    browserbaseProvider: options.browserbaseProvider,
+    fireworksApiKey: options.fireworksApiKey,
+    fireworksEndpoint: options.fireworksEndpoint
   });
   registerV1Routes(app, {
     runs,
