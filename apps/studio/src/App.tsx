@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, ApiError, getClientToken, getToken, setClientToken, setToken, type Account, type Automation, type Run } from "./api";
+import { api, ApiError, getClientToken, getToken, setClientToken, setToken, type Account, type Automation, type Run, type SpendSummary } from "./api";
 import { AutomationPage } from "./AutomationPage";
 import { RunInspector } from "./RunInspector";
 
@@ -121,12 +121,14 @@ function Home({ automations, accounts, refresh }: { automations: Automation[]; a
   const [template, setTemplate] = useState<"blank" | "eligibility-overview">("blank");
   const [error, setError] = useState<string | null>(null);
   const [runs, setRuns] = useState<Run[]>([]);
+  const [spend, setSpend] = useState<SpendSummary | null>(null);
   const [clientToken, setClientTokenState] = useState(getClientToken());
   const [secretAccount, setSecretAccount] = useState(accounts[0]?.id ?? "");
   const [secretStatus, setSecretStatus] = useState<string | null>(null);
 
   useEffect(() => {
     api<Run[]>("GET", "/studio/runs").then(setRuns).catch(() => setRuns([]));
+    api<SpendSummary>("GET", "/studio/spend").then(setSpend).catch(() => setSpend(null));
   }, [automations]);
 
   return (
@@ -291,6 +293,9 @@ function Home({ automations, accounts, refresh }: { automations: Automation[]; a
       <section hidden={workspaceView !== "Runs"}>
       <div className="panel">
         <h2>Recent runs</h2>
+        <p className="muted">
+          Total provider spend: {spend ? `$${spend.total.estimatedCostUsd.toFixed(6)} · ${spend.total.providerCalls} provider calls · ${spend.total.inputTokens} input tokens` : "unavailable"}
+        </p>
         <RunTable runs={runs} />
       </div>
       </section>
@@ -310,32 +315,41 @@ export function RunTable({ runs }: { runs: Run[] }) {
           <th>Input</th>
           <th>State</th>
           <th>Engine</th>
-          <th>Model calls / actions / ms</th>
+          <th>Decisions / provider calls / cost / actions / ms</th>
           <th>Created</th>
         </tr>
       </thead>
       <tbody>
-        {runs.map((r) => (
-          <tr key={r.id} style={{ cursor: "pointer" }} onClick={() => navigate(`/runs/${r.id}`)}>
-            <td>
-              <code>{r.id.slice(0, 8)}</code>
-            </td>
-            <td>{r.kind}</td>
-            <td>{r.revision || "draft"}</td>
-            <td>
-              <code>{r.accountId}</code>
-            </td>
-            <td>
-              <code>{JSON.stringify(r.input)}</code>
-            </td>
-            <td>
-              <StateBadge state={r.state} />
-            </td>
-            <td className="muted">{r.metrics?.engine ?? "—"}</td>
-            <td className="muted">{r.metrics ? `${r.metrics.modelCalls} / ${r.metrics.actions} / ${r.metrics.elapsedMs}` : "—"}</td>
-            <td className="muted">{new Date(r.createdAt).toLocaleTimeString()}</td>
-          </tr>
-        ))}
+        {runs.map((r) => {
+          const metrics = r.metrics;
+          const decisionLabel = metrics?.engine.toLowerCase().includes("scripted") ? "scripted decisions" : "Jev decisions";
+          const estimatedCost = typeof metrics?.estimatedCostUsd === "number" ? `$${metrics.estimatedCostUsd.toFixed(6)}` : "unknown";
+          return (
+            <tr key={r.id} style={{ cursor: "pointer" }} onClick={() => navigate(`/runs/${r.id}`)}>
+              <td>
+                <code>{r.id.slice(0, 8)}</code>
+              </td>
+              <td>{r.kind}</td>
+              <td>{r.revision || "draft"}</td>
+              <td>
+                <code>{r.accountId}</code>
+              </td>
+              <td>
+                <code>{JSON.stringify(r.input)}</code>
+              </td>
+              <td>
+                <StateBadge state={r.state} />
+              </td>
+              <td className="muted">{metrics?.engine ?? "—"}</td>
+              <td className="muted">
+                {metrics
+                  ? `${decisionLabel} ${metrics.modelCalls} · ${metrics.providerCalls ?? "unknown"} provider calls · estimated cost ${estimatedCost} · ${metrics.actions} actions · ${metrics.elapsedMs} ms`
+                  : "—"}
+              </td>
+              <td className="muted">{new Date(r.createdAt).toLocaleTimeString()}</td>
+            </tr>
+          );
+        })}
         {!runs.length && (
           <tr>
             <td colSpan={9} className="muted">

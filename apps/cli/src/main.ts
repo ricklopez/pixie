@@ -53,6 +53,7 @@ const HELP = `pixie — local developer CLI for the Pixie gateway (runs from thi
   pixie runs [--automation <id>]  list Studio runs
   pixie run <runId> [--events]    inspect a run and its timeline
   pixie cancel <runId>            cancel a queued or running Studio run
+  pixie spend                      show provider-call spend totals and ledger rows
   pixie invoke <id> --input '<json>' [--account <id>] [--revision <n>]
       [--idempotency-key <key>] [--follow]
   pixie openapi <id> [-o file]    retrieve the published OpenAPI document
@@ -352,9 +353,11 @@ function printMetrics(out: Out, value: unknown): void {
   const metrics = asObject(value);
   if (!metrics) return;
   const engine = String(metrics.engine ?? "");
-  const countLabel = engine.toLowerCase().includes("scripted") ? "scripted decisions" : "model calls";
+  const countLabel = engine.toLowerCase().includes("scripted") ? "scripted decisions" : "Jev decisions";
+  const providerCalls = String(metrics.providerCalls ?? "unknown");
+  const estimatedCost = typeof metrics.estimatedCostUsd === "number" ? `$${metrics.estimatedCostUsd.toFixed(6)}` : "unknown";
   out.log(
-    `${countLabel}=${String(metrics.modelCalls ?? "unknown")} engine=${engine || "unknown"} ` +
+    `${countLabel}=${String(metrics.modelCalls ?? "unknown")} providerCalls=${providerCalls} estimatedCostUsd=${estimatedCost} engine=${engine || "unknown"} ` +
       `actions=${String(metrics.actions ?? "unknown")} ` +
       `elapsedMs=${String(metrics.elapsedMs ?? "unknown")}`
   );
@@ -700,6 +703,33 @@ async function runsList(project: Project, out: Out, automationId: string | undef
   return 0;
 }
 
+async function spend(project: Project, out: Out, jsonMode: boolean): Promise<number> {
+  const response = await studioRequest(project, "GET", "/studio/spend");
+  if (response.status !== 200) return reportApiError(out, "spend", response, jsonMode);
+  if (jsonMode) {
+    emitApiJson(out, response);
+    return 0;
+  }
+  const summary = asObject(response.json);
+  const total = asObject(summary?.total);
+  const rows = Array.isArray(summary?.rows) ? summary.rows : [];
+  const formatUsd = (value: unknown) => typeof value === "number" ? `$${value.toFixed(6)}` : "unknown";
+  out.log(
+    `total estimated spend: ${formatUsd(total?.estimatedCostUsd)} ` +
+      `(${String(total?.providerCalls ?? "unknown")} provider calls, ${String(total?.inputTokens ?? "unknown")} input tokens)`
+  );
+  for (const value of rows) {
+    const row = asObject(value);
+    if (!row) continue;
+    out.log(
+      `run=${String(row.runId)} at=${String(row.at)} providerCalls=${String(row.providerCalls)} ` +
+        `inputTokens=${String(row.inputTokens)} estimatedCostUsd=${formatUsd(row.estimatedCostUsd)}`
+    );
+  }
+  if (rows.length === 0) out.log("no provider spend recorded");
+  return 0;
+}
+
 async function showRun(project: Project, out: Out, runId: string, events: boolean, jsonMode: boolean): Promise<number> {
   const response = await studioRequest(project, "GET", `/studio/runs/${encodeURIComponent(runId)}`);
   if (response.status !== 200) return reportApiError(out, "run", response, jsonMode);
@@ -1026,6 +1056,8 @@ export async function main(argv: string[], out: Out = stdio): Promise<number> {
         return publish(project, arg, out, jsonMode);
       case "runs":
         return runsList(project, out, values.automation, jsonMode);
+      case "spend":
+        return spend(project, out, jsonMode);
       case "run":
         if (!required(arg, "pixie run <runId> [--events]")) return 2;
         return showRun(project, out, arg, values.events === true, jsonMode);

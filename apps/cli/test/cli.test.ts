@@ -114,7 +114,7 @@ async function withApi(run: (baseUrl: string, requests: RequestRecord[]) => Prom
             id: "test-run-1",
             automationId: "auto-1",
             state: testPolls === 1 ? "running" : "completed",
-            metrics: { engine: "scripted (offline)", modelCalls: 3, actions: 4, elapsedMs: 12 }
+            metrics: { engine: "scripted (offline)", modelCalls: 3, providerCalls: 0, estimatedCostUsd: 0, actions: 4, elapsedMs: 12 }
           },
           verification,
           data: { memberId: "DEMO-1001" },
@@ -143,6 +143,12 @@ async function withApi(run: (baseUrl: string, requests: RequestRecord[]) => Prom
       if (path === "/studio/runs" && record.method === "GET") {
         return send(200, [{ id: "test-run-1", automationId: "auto-1", state: "completed", kind: "test", revision: 0 }]);
       }
+      if (path === "/studio/spend" && record.method === "GET") {
+        return send(200, {
+          rows: [{ runId: "live-run-1", at: "2026-09-25T12:00:00.000Z", providerCalls: 2, inputTokens: 25000, estimatedCostUsd: 0.00105 }],
+          total: { providerCalls: 2, inputTokens: 25000, estimatedCostUsd: 0.00105 }
+        });
+      }
       if (path === "/studio/runs/unknown-run" && record.method === "GET") return send(404, { error: "not found" });
       if (path === "/studio/runs/test-run-1/cancel" && record.method === "POST") return send(202, { ok: true });
       if (path === "/v1/automations" && record.method === "GET") {
@@ -158,7 +164,7 @@ async function withApi(run: (baseUrl: string, requests: RequestRecord[]) => Prom
           id: "public-run-1",
           automationId: "auto-1",
           state: "completed",
-          metrics: { engine: "scripted", modelCalls: 3, actions: 4, elapsedMs: 12 }
+          metrics: { engine: "scripted", modelCalls: 3, providerCalls: 0, estimatedCostUsd: 0, actions: 4, elapsedMs: 12 }
         });
       }
       if (path === "/v1/automations/auto-1/runs/public-run-1/result" && record.method === "GET") {
@@ -280,6 +286,7 @@ test("Studio commands use the developer token, JSON output is API JSON, and unsa
       ["test", "auto-1", "--follow", "--json"],
       ["publish", "auto-1", "--json"],
       ["runs", "--automation", "auto-1", "--json"],
+      ["spend", "--json"],
       ["run", "test-run-1", "--events", "--json"],
       ["cancel", "test-run-1", "--json"],
       ["openapi", "auto-1", "--json"],
@@ -323,8 +330,27 @@ test("test --follow reports state, verification, and API-labelled scripted decis
     assert.ok(lines.some((line) => line === "state: completed"));
     assert.ok(lines.some((line) => line.includes("verification: accepted (16/16 checks passed)")));
     assert.ok(lines.some((line) => line.includes("scripted decisions=3")));
+    assert.ok(lines.some((line) => line.includes("providerCalls=0 estimatedCostUsd=$0.000000")));
     const start = requests.find((request) => request.url === "/studio/automations/auto-1/test")!;
     assert.deepEqual(start.body, { accountId: "acct_demo", input: { memberId: "DEMO-1001" } });
+  });
+});
+
+test("spend prints the API ledger and preserves raw JSON output", async () => {
+  await withApi(async (_baseUrl, requests) => {
+    const { lines, out } = capture();
+    assert.equal(await main(["spend"], out), 0);
+    assert.ok(lines.some((line) => line.includes("total estimated spend: $0.001050 (2 provider calls, 25000 input tokens)")));
+    assert.ok(lines.some((line) => line.includes("run=live-run-1") && line.includes("estimatedCostUsd=$0.001050")));
+
+    const json = capture();
+    assert.equal(await main(["--json", "spend"], json.out), 0);
+    assert.deepEqual(JSON.parse(json.lines[0]!), {
+      rows: [{ runId: "live-run-1", at: "2026-09-25T12:00:00.000Z", providerCalls: 2, inputTokens: 25000, estimatedCostUsd: 0.00105 }],
+      total: { providerCalls: 2, inputTokens: 25000, estimatedCostUsd: 0.00105 }
+    });
+    const request = requests.find((item) => item.url === "/studio/spend")!;
+    assert.equal(request.auth, "Bearer dev-test-token");
   });
 });
 

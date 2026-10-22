@@ -48,10 +48,17 @@ class LiveSession:
 
 
 class LiveEngine:
-    def choose(self, page, goal, history):
-        from jev_ultrafast.model import choose
+    def __init__(self):
+        from jev_ultrafast import model
 
-        decision = choose(page, goal, history)
+        self.model = model
+
+    @property
+    def provider_client(self):
+        return self.model.CLIENT
+
+    def choose(self, page, goal, history):
+        decision = self.model.choose(page, goal, history)
         # The request body echoes page text and the goal; keep it out of the event stream.
         decision.pop("request", None)
         return decision

@@ -1,5 +1,6 @@
 import json
 
+from gateway_worker.budget import ProviderCallBudget
 from gateway_worker.controller import Controller
 from gateway_worker.scripted import FailingEngine, ScriptedEngine
 
@@ -112,3 +113,34 @@ def test_origin_escape_fails_the_run(definition):
     session.current = dict(session.current, url="https://evil.example/phish")
     result, _ = run(definition, "DEMO-1001", session, ScriptedEngine(HAPPY))
     assert result["outcome"] == "failed" and "policy_violation:origin" in result["reason"]
+
+
+def test_provider_budget_stops_an_engine_that_keeps_requesting_calls(definition):
+    budget = ProviderCallBudget(2)
+    events = []
+
+    class RunawayEngine:
+        def choose(self, page, goal, history):
+            while True:
+                budget.record_request("https://api.typesafe.ai/v1/systemone")
+
+    session = FakeSession({"DEMO-1001": "DEMO-1001"})
+    controller = Controller(
+        definition,
+        {"memberId": "DEMO-1001"},
+        session,
+        RunawayEngine(),
+        events.append,
+        provider_budget=budget,
+    )
+    result = controller.run()
+
+    assert result["outcome"] == "failed"
+    assert result["reason"] == "provider_call_budget_exhausted"
+    assert result["providerCalls"] == 2
+    assert [event["type"] for event in events].count("provider_call") == 2
+
+
+def test_provider_budget_defaults_to_forty(monkeypatch):
+    monkeypatch.delenv("PIXIE_MAX_PROVIDER_CALLS", raising=False)
+    assert ProviderCallBudget().max_calls == 40

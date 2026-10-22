@@ -194,6 +194,7 @@ node apps/cli/bin/pixie.js invoke <automation-id> \
   --account acct_demo --input '{"memberId":"DEMO-1002"}' \
   --idempotency-key demo-member-1002 --follow
 node apps/cli/bin/pixie.js runs --automation <automation-id>
+node apps/cli/bin/pixie.js spend
 ```
 
 Use `--json` on API commands for JSON output. `pixie record <automation-id>`
@@ -208,3 +209,9 @@ node apps/cli/bin/pixie.js dev --scripted --portal
 The CLI does not drive the recording browser. `pixie keys create` displays a
 newly created token once; store it securely. Existing tokens and provider keys
 are never printed.
+
+Live worker requests are capped at 40 provider calls per run by default.
+Set `PIXIE_MAX_PROVIDER_CALLS` before starting the API to choose a lower cap;
+the worker counts retries before each request. `pixie spend` and Studio's Runs
+tab show the local ledger and estimated input-token cost for terminal runs with
+provider calls.

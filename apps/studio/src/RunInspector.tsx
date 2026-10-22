@@ -52,6 +52,8 @@ export function RunInspector({ runId }: { runId: string }) {
   if (!evidence) return <p className="muted">Loading…</p>;
   const { run } = evidence;
   const m = run.metrics;
+  const decisionLabel = m?.engine.toLowerCase().includes("scripted") ? "Scripted decisions" : "Jev decisions";
+  const estimatedCost = typeof m?.estimatedCostUsd === "number" ? `$${m.estimatedCostUsd.toFixed(6)}` : "unknown";
 
   return (
     <>
@@ -80,8 +82,10 @@ export function RunInspector({ runId }: { runId: string }) {
       </p>
 
       <div className="stat-grid">
-        <div><span>Jev decisions</span><strong>{evidence.modelDecisions.length}</strong></div>
+        <div><span>{decisionLabel}</span><strong>{evidence.modelDecisions.length}</strong></div>
         <div><span>Browser actions</span><strong>{evidence.actions.length}</strong></div>
+        <div><span>Provider calls</span><strong>{m?.providerCalls ?? "unknown"}</strong></div>
+        <div><span>Estimated cost</span><strong>{estimatedCost}</strong></div>
         <div><span>Worker time</span><strong>{m ? `${(m.elapsedMs / 1000).toFixed(1)}s` : "Running"}</strong></div>
       </div>
       {run.failure && <div className="notice">{run.failure.reason}</div>}
@@ -131,7 +135,7 @@ export function RunInspector({ runId }: { runId: string }) {
         <h2>Engine metrics</h2>
         {m ? (
           <p>
-            engine <code>{m.engine}</code> · revision <code>{m.engineRevision.slice(0, 12)}</code> · {m.modelCalls} model calls · {m.actions} actions · {m.policyRejections} policy rejections · {m.elapsedMs} ms worker time · model latency{" "}
+            engine <code>{m.engine}</code> · revision <code>{m.engineRevision.slice(0, 12)}</code> · {decisionLabel.toLowerCase()} {m.modelCalls} · {m.providerCalls ?? "unknown"} provider calls · estimated cost {estimatedCost} · {m.actions} actions · {m.policyRejections} policy rejections · {m.elapsedMs} ms worker time · model latency{" "}
             {m.modelLatencyMs.length ? `${Math.min(...m.modelLatencyMs)}–${Math.max(...m.modelLatencyMs)} ms (${m.modelLatencyMs.join(", ")})` : "n/a"} · tokens {m.inputTokens}/{m.outputTokens}
           </p>
         ) : (

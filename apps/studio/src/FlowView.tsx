@@ -144,7 +144,7 @@ export function DecisionList({ decisions, selected, onSelect, run, verified }: {
             {!decisions.length && (
               <tr>
                 <td colSpan={7} className="muted">
-                  No model calls recorded for this run.
+                  No decisions recorded for this run.
                 </td>
               </tr>
             )}

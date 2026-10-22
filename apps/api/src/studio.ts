@@ -280,6 +280,24 @@ export function registerStudioRoutes(app: FastifyInstance, ctx: StudioContext) {
         : (db.prepare(`SELECT * FROM runs WHERE tenant_id = ? ORDER BY created_at DESC LIMIT 100`).all(req.principal.tenantId) as unknown as RunRow[]);
       return rows.map(runView);
     });
+    studio.get("/studio/spend", async (req) => {
+      const rows = db
+        .prepare(
+          `SELECT spend_ledger.run_id AS runId, spend_ledger.at, spend_ledger.provider_calls AS providerCalls,
+             spend_ledger.input_tokens AS inputTokens, spend_ledger.estimated_cost_usd AS estimatedCostUsd
+           FROM spend_ledger JOIN runs ON runs.id = spend_ledger.run_id
+           WHERE runs.tenant_id = ? ORDER BY spend_ledger.at DESC`
+        )
+        .all(req.principal.tenantId) as { runId: string; at: string; providerCalls: number; inputTokens: number; estimatedCostUsd: number }[];
+      return {
+        rows,
+        total: {
+          providerCalls: rows.reduce((sum, row) => sum + row.providerCalls, 0),
+          inputTokens: rows.reduce((sum, row) => sum + row.inputTokens, 0),
+          estimatedCostUsd: Number(rows.reduce((sum, row) => sum + row.estimatedCostUsd, 0).toFixed(6))
+        }
+      };
+    });
     studio.get<{ Params: { runId: string } }>("/studio/runs/:runId", async (req, reply) => {
       const run = ctx.runs.get(req.params.runId);
       if (!run || run.tenant_id !== req.principal.tenantId) return reply.code(404).send({ error: "not found" });
