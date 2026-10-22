@@ -1,14 +1,15 @@
-import { useCallback, useEffect, useState } from "react";
-import { api, ApiError, getClientToken, getToken, setClientToken, setToken, type Account, type Automation, type Run, type SpendSummary } from "./api";
+import { useCallback, useEffect, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { api, ApiError, getClientToken, getToken, setClientToken, setToken, type Account, type Automation, type Connection, type Run, type SpendSummary } from "./api";
 import { AutomationPage } from "./AutomationPage";
 import { RunInspector } from "./RunInspector";
 
-type Route = { page: "home" } | { page: "automation"; id: string; tab?: string } | { page: "run"; runId: string };
+type Route = { page: "home" } | { page: "automation"; id: string; tab?: string } | { page: "run"; runId: string } | { page: "connection"; id: string };
 
 function parseRoute(hash: string): Route {
   const parts = hash.replace(/^#\/?/, "").split("/").filter(Boolean);
   if (parts[0] === "automations" && parts[1]) return { page: "automation", id: parts[1], tab: parts[2] };
   if (parts[0] === "runs" && parts[1]) return { page: "run", runId: parts[1] };
+  if (parts[0] === "connections" && parts[1]) return { page: "connection", id: parts[1] };
   return { page: "home" };
 }
 
@@ -109,6 +110,7 @@ export function App() {
         {route.page === "home" && <Home automations={automations} accounts={accounts} refresh={refresh} />}
         {route.page === "automation" && <AutomationPage id={route.id} tab={route.tab} accounts={accounts} onChanged={refresh} />}
         {route.page === "run" && <RunInspector runId={route.runId} />}
+        {route.page === "connection" && <ConnectionHandoff id={route.id} />}
       </main>
     </div>
   );
@@ -122,6 +124,7 @@ function Home({ automations, accounts, refresh }: { automations: Automation[]; a
   const [error, setError] = useState<string | null>(null);
   const [runs, setRuns] = useState<Run[]>([]);
   const [spend, setSpend] = useState<SpendSummary | null>(null);
+  const [connections, setConnections] = useState<Connection[]>([]);
   const [clientToken, setClientTokenState] = useState(getClientToken());
   const [secretAccount, setSecretAccount] = useState(accounts[0]?.id ?? "");
   const [secretStatus, setSecretStatus] = useState<string | null>(null);
@@ -129,7 +132,18 @@ function Home({ automations, accounts, refresh }: { automations: Automation[]; a
   useEffect(() => {
     api<Run[]>("GET", "/studio/runs").then(setRuns).catch(() => setRuns([]));
     api<SpendSummary>("GET", "/studio/spend").then(setSpend).catch(() => setSpend(null));
+    api<Connection[]>("GET", "/studio/connections").then(setConnections).catch(() => setConnections([]));
   }, [automations]);
+
+  const startConnection = async (account: Account) => {
+    try {
+      const connection = await api<Connection>("POST", "/studio/connections", { accountId: account.id, environment: account.environment ?? "local" });
+      await api("POST", `/studio/connections/${encodeURIComponent(connection.id)}/connect`);
+      navigate(`/connections/${connection.id}`);
+    } catch (e) {
+      setError(e instanceof ApiError ? JSON.stringify(e.body) : String(e));
+    }
+  };
 
   return (
     <>
@@ -208,6 +222,34 @@ function Home({ automations, accounts, refresh }: { automations: Automation[]; a
 
       </section>
       <section hidden={workspaceView !== "Connections & keys"}>
+      <div className="panel">
+        <h2>Persistent connections</h2>
+        <p className="muted">A Browserbase context is isolated per account and environment. Login is driven only through this Pixie handoff.</p>
+        <table>
+          <thead><tr><th>Account</th><th>Environment</th><th>State</th><th>Verified</th><th>Actions</th></tr></thead>
+          <tbody>
+            {connections.map((connection) => (
+              <tr key={connection.id}>
+                <td>{connection.accountName}</td><td>{connection.environment}</td><td><span className="badge">{connection.state}</span>{connection.contextStatus === "orphaned" && <span className="error"> context orphaned</span>}</td>
+                <td className="muted">{connection.lastVerifiedAt ? new Date(connection.lastVerifiedAt).toLocaleString() : "—"}</td>
+                <td className="row">
+                  <button className="secondary" onClick={() => void navigate(`/connections/${connection.id}`)}>Open</button>
+                  <button onClick={() => {
+                    const account = accounts.find((item) => item.id === connection.accountId);
+                    if (account) void startConnection(account);
+                  }}>Connect</button>
+                  <button className="secondary" onClick={async () => {
+                    await api("POST", `/studio/connections/${connection.id}/disconnect`);
+                    setConnections(await api<Connection[]>("GET", "/studio/connections"));
+                  }}>Disconnect</button>
+                </td>
+              </tr>
+            ))}
+            {!connections.length && <tr><td colSpan={5} className="muted">No Browserbase connections configured.</td></tr>}
+          </tbody>
+        </table>
+        {error && <p className="error">{error}</p>}
+      </div>
       <div className="grid2">
         <div className="panel">
           <h2>Accounts</h2>
@@ -295,6 +337,7 @@ function Home({ automations, accounts, refresh }: { automations: Automation[]; a
         <h2>Recent runs</h2>
         <p className="muted">
           Total provider spend: {spend ? `$${spend.total.estimatedCostUsd.toFixed(6)} · ${spend.total.providerCalls} provider calls · ${spend.total.inputTokens} input tokens` : "unavailable"}
+          {spend ? ` · Browserbase ${((spend.browserSessionSeconds ?? 0) / 60).toFixed(2)} session-minutes` : ""}
         </p>
         <RunTable runs={runs} />
       </div>
@@ -315,7 +358,7 @@ export function RunTable({ runs }: { runs: Run[] }) {
           <th>Input</th>
           <th>State</th>
           <th>Engine</th>
-          <th>Decisions / provider calls / cost / actions / ms</th>
+          <th>Decisions / provider calls / cost / browser minutes / actions / ms</th>
           <th>Created</th>
         </tr>
       </thead>
@@ -343,7 +386,7 @@ export function RunTable({ runs }: { runs: Run[] }) {
               <td className="muted">{metrics?.engine ?? "—"}</td>
               <td className="muted">
                 {metrics
-                  ? `${decisionLabel} ${metrics.modelCalls} · ${metrics.providerCalls ?? "unknown"} provider calls · estimated cost ${estimatedCost} · ${metrics.actions} actions · ${metrics.elapsedMs} ms`
+                  ? `${decisionLabel} ${metrics.modelCalls} · ${metrics.providerCalls ?? "unknown"} provider calls · estimated cost ${estimatedCost} · Browserbase ${((metrics.browserSessionSeconds ?? 0) / 60).toFixed(2)} min · ${metrics.actions} actions · ${metrics.elapsedMs} ms`
                   : "—"}
               </td>
               <td className="muted">{new Date(r.createdAt).toLocaleTimeString()}</td>
@@ -365,4 +408,103 @@ export function RunTable({ runs }: { runs: Run[] }) {
 export function StateBadge({ state }: { state: string }) {
   const cls = state === "completed" ? "ok" : state === "needs_review" || state === "awaiting_auth" ? "warn" : state === "failed" || state === "cancelled" ? "bad" : "active";
   return <span className={`badge ${cls}`}>{state}</span>;
+}
+
+function ConnectionHandoff({ id }: { id: string }) {
+  const [connection, setConnection] = useState<Connection | null>(null);
+  const [frame, setFrame] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    const refresh = async () => {
+      try {
+        const current = await api<Connection>("GET", `/studio/connections/${encodeURIComponent(id)}`);
+        if (active) setConnection(current);
+      } catch (e) {
+        if (active) setError(String(e));
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 1500);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [id]);
+
+  useEffect(() => {
+    let active = true;
+    let objectUrl = "";
+    const refreshFrame = async () => {
+      try {
+        const response = await fetch(`/studio/connections/${encodeURIComponent(id)}/frame`, { headers: { authorization: `Bearer ${getToken()}` } });
+        if (!response.ok) return;
+        const blob = await response.blob();
+        if (!blob.size || !active) return;
+        const next = URL.createObjectURL(blob);
+        setFrame(next);
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+        objectUrl = next;
+      } catch {
+        if (active) setError("The handoff frame is unavailable.");
+      }
+    };
+    void refreshFrame();
+    const timer = window.setInterval(() => void refreshFrame(), 1000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [id]);
+
+  const send = async (body: Record<string, unknown>) => {
+    try {
+      await api("POST", `/studio/connections/${encodeURIComponent(id)}/input`, body);
+    } catch (e) {
+      setError(e instanceof ApiError && e.status === 403 ? "Only the developer who started this handoff may send input." : String(e));
+    }
+  };
+  const pointer = (event: ReactMouseEvent<HTMLImageElement>, type: "mousePressed" | "mouseReleased") => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    void send({ type: "mouse", event: type, x: Math.round(((event.clientX - rect.left) / rect.width) * 1120), y: Math.round(((event.clientY - rect.top) / rect.height) * 780) });
+  };
+
+  if (!connection) return <div className="panel">{error ?? "Loading connection…"}</div>;
+  return (
+    <div className="panel">
+      <p className="eyebrow">PERSISTENT BROWSERBASE CONTEXT</p>
+      <h1>Login handoff</h1>
+      <p className="muted">{connection.accountName} · {connection.environment} · <StateBadge state={connection.state} /></p>
+      <p>Complete login in this Pixie-controlled browser, then select Resume to verify the persisted session.</p>
+      {frame && (
+        <img
+          src={frame}
+          alt="Browser handoff"
+          tabIndex={0}
+          style={{ width: "min(100%, 1120px)", border: "1px solid #39445b", borderRadius: 8, cursor: "crosshair" }}
+          onMouseDown={(event) => pointer(event, "mousePressed")}
+          onMouseUp={(event) => pointer(event, "mouseReleased")}
+          onWheel={(event) => { event.preventDefault(); void send({ type: "wheel", x: event.nativeEvent.offsetX, y: event.nativeEvent.offsetY, deltaY: event.deltaY }); }}
+          onKeyDown={(event) => { event.preventDefault(); void send({ type: "key", event: "keyDown", key: event.key, code: event.code, ...(event.key.length === 1 ? { text: event.key } : {}) }); }}
+          onKeyUp={(event) => { event.preventDefault(); void send({ type: "key", event: "keyUp", key: event.key, code: event.code }); }}
+        />
+      )}
+      <div className="row" style={{ marginTop: 12 }}>
+        <button disabled={!connection.controller} onClick={async () => {
+          try {
+            const result = await api<{ state: string }>("POST", `/studio/connections/${encodeURIComponent(id)}/resume`);
+            setConnection({ ...connection, state: result.state as Connection["state"], controller: false });
+          } catch (e) { setError(String(e)); }
+        }}>Resume (“I'm logged in”)</button>
+        <button className="secondary" onClick={async () => {
+          await api("POST", `/studio/connections/${encodeURIComponent(id)}/disconnect`);
+          navigate("/");
+        }}>Disconnect</button>
+      </div>
+      {!connection.controller && <p className="muted">You can view this handoff, but only its controller can send input.</p>}
+      {error && <p className="error">{error}</p>}
+    </div>
+  );
 }

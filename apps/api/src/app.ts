@@ -5,9 +5,12 @@ import { now } from "./db.js";
 import { RunManager, type RunManagerOptions } from "./runs.js";
 import { registerStudioRoutes } from "./studio.js";
 import { registerV1Routes } from "./v1.js";
+import type { BrowserProvider, BrowserbaseProvider } from "./browser-provider.js";
 
 export interface AppOptions extends Omit<RunManagerOptions, "db"> {
   db: DatabaseSync;
+  browserProviders?: Partial<Record<"local" | "browserbase", BrowserProvider>>;
+  browserbaseProvider?: BrowserbaseProvider;
   cdpUrl: (tenantId: string) => Promise<string>;
   /** Browser profiles currently launched (for diagnostics); tenant-scoped filtering happens in the route. */
   browserProfiles?: () => { name: string; cdpUrl: string; userDataDir: string }[];
@@ -36,14 +39,21 @@ export function bootstrap(db: DatabaseSync, tokens: BootstrapTokens, portalOrigi
 
 export function buildApp(options: AppOptions): { app: FastifyInstance; runs: RunManager; shutdown: () => Promise<void> } {
   const app = Fastify({ logger: options.logger ?? false, bodyLimit: 1_000_000 });
-  const runs = new RunManager({ db: options.db, runner: options.runner, evidenceRoot: options.evidenceRoot, selectEngine: options.selectEngine });
+  const runs = new RunManager({
+    db: options.db,
+    runner: options.runner,
+    evidenceRoot: options.evidenceRoot,
+    selectEngine: options.selectEngine,
+    browserProviders: options.browserProviders
+  });
   app.get("/health", async () => ({ ok: true, time: now() }));
   const studio = registerStudioRoutes(app, {
     runs,
     cdpUrl: options.cdpUrl,
     browserProfiles: options.browserProfiles ?? (() => []),
     allowLoopback: options.allowLoopback,
-    publicBaseUrl: options.publicBaseUrl
+    publicBaseUrl: options.publicBaseUrl,
+    browserbaseProvider: options.browserbaseProvider
   });
   registerV1Routes(app, { runs, publicBaseUrl: options.publicBaseUrl, sendEvidenceFile: studio.sendEvidenceFile });
   return {
@@ -51,6 +61,11 @@ export function buildApp(options: AppOptions): { app: FastifyInstance; runs: Run
     runs,
     shutdown: async () => {
       await studio.stopAllRecordings();
+      try {
+        await options.browserbaseProvider?.sweepOrphans();
+      } catch {
+        console.error("Browserbase orphan sweep failed during shutdown");
+      }
       await app.close();
     }
   };

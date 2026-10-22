@@ -28,7 +28,7 @@ test("scripted decisions stay separate from provider calls and spend", async () 
   assert.equal(run.metrics.providerCalls, 0);
   assert.equal(run.metrics.estimatedCostUsd, 0);
   const spend = await call(app, TOKENS.developer, "GET", "/studio/spend");
-  assert.deepEqual(spend.json, { rows: [], total: { providerCalls: 0, inputTokens: 0, estimatedCostUsd: 0 } });
+  assert.deepEqual(spend.json, { rows: [], browserSessionSeconds: 0, total: { providerCalls: 0, inputTokens: 0, estimatedCostUsd: 0 } });
   assert.equal((await call(app, TOKENS.client, "GET", "/studio/spend")).status, 403);
   await shutdown();
 });
@@ -53,7 +53,7 @@ test("provider metrics and spend ledger are recorded once and scoped to the tena
 
   createApiKey(db, "tenant_other", "other developer", "developer", "other-dev-token");
   const foreign = await call(app, "other-dev-token", "GET", "/studio/spend");
-  assert.deepEqual(foreign.json, { rows: [], total: { providerCalls: 0, inputTokens: 0, estimatedCostUsd: 0 } });
+  assert.deepEqual(foreign.json, { rows: [], browserSessionSeconds: 0, total: { providerCalls: 0, inputTokens: 0, estimatedCostUsd: 0 } });
   await shutdown();
 });
 

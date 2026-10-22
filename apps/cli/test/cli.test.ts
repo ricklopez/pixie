@@ -42,6 +42,7 @@ async function withApi(run: (baseUrl: string, requests: RequestRecord[]) => Prom
   const requests: RequestRecord[] = [];
   let testPolls = 0;
   let publicRunCreated = false;
+  let connectionPolls = 0;
   const server = createServer((req, res) => {
     const chunks: Buffer[] = [];
     req.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -77,6 +78,14 @@ async function withApi(run: (baseUrl: string, requests: RequestRecord[]) => Prom
         return send(200, [{ id: "acct_demo", name: "Demo", portalOrigin: "http://127.0.0.1:4174" }]);
       }
       if (path === "/studio/accounts" && record.method === "POST") return send(201, { id: "acct-created" });
+      if (path === "/studio/connections" && record.method === "GET") return send(200, [{ id: "connection-1", accountId: "acct_demo", accountName: "Demo", environment: "production", state: "connected" }]);
+      if (path === "/studio/connections" && record.method === "POST") return send(201, { id: "connection-1", accountId: "acct_demo", environment: "production", state: "disconnected" });
+      if (path === "/studio/connections/connection-1/connect" && record.method === "POST") return send(201, { id: "connection-1", state: "connecting" });
+      if (path === "/studio/connections/connection-1" && record.method === "GET") {
+        connectionPolls += 1;
+        return send(200, { id: "connection-1", state: connectionPolls > 1 ? "connected" : "connecting" });
+      }
+      if (path === "/studio/connections/connection-1/disconnect" && record.method === "POST") return send(200, { id: "connection-1", state: "disconnected", contextCleanup: "deleted" });
       if (path === "/studio/accounts/acct-demo/secrets" && record.method === "PUT") return send(200, { stored: ["ref"] });
       if (path === "/studio/automations" && record.method === "GET") return send(200, [automation]);
       if (path === "/studio/automations" && record.method === "POST") {
@@ -432,5 +441,36 @@ test("client token can come from project config, and human key output reveals on
     assert.equal(await main(["keys", "create", "one-time", "--role", "developer"], key.out), 0);
     assert.equal(key.lines.join("\n").split("newly-created-token").length - 1, 1);
     assert.ok(key.lines.some((line) => line.includes("shown once")));
+  });
+});
+
+test("Browserbase account, connection, connect handoff, and disconnect commands use the Studio API", async () => {
+  await withApi(async (_baseUrl, requests) => {
+    const account = capture();
+    assert.equal(await main(["accounts", "add", "--name", "Hosted", "--origin", "https://portal.example.test", "--provider", "browserbase", "--environment", "production"], account.out), 0);
+    const addRequest = requests.find((request) => request.method === "POST" && request.url === "/studio/accounts");
+    assert.deepEqual(addRequest?.body, {
+      name: "Hosted", portalOrigin: "https://portal.example.test", provider: "browserbase", environment: "production"
+    });
+
+    const list = capture();
+    assert.equal(await main(["connections"], list.out), 0);
+    assert.ok(list.lines.some((line) => line.includes("connection-1") && line.includes("production")));
+
+    const connect = capture();
+    assert.equal(await main(["connect", "acct_demo", "--env", "production"], connect.out), 0);
+    assert.ok(connect.lines.some((line) => line.includes("/#/connections/connection-1")));
+    assert.equal(connect.lines.at(-1), "connected");
+    const created = requests.find((request) => request.method === "POST" && request.url === "/studio/connections");
+    assert.deepEqual(created?.body, { accountId: "acct_demo", environment: "production" });
+
+    const disconnect = capture();
+    assert.equal(await main(["disconnect", "connection-1"], disconnect.out), 0);
+    assert.ok(disconnect.lines[0]?.includes("context cleanup"));
+    assert.ok(requests.some((request) => request.method === "POST" && request.url === "/studio/connections/connection-1/disconnect"));
+
+    const json = capture();
+    assert.equal(await main(["--json", "connections"], json.out), 0);
+    assert.deepEqual(JSON.parse(json.lines[0]!), [{ id: "connection-1", accountId: "acct_demo", accountName: "Demo", environment: "production", state: "connected" }]);
   });
 });

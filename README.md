@@ -215,3 +215,52 @@ Set `PIXIE_MAX_PROVIDER_CALLS` before starting the API to choose a lower cap;
 the worker counts retries before each request. `pixie spend` and Studio's Runs
 tab show the local ledger and estimated input-token cost for terminal runs with
 provider calls.
+
+### Browserbase persistent connections
+
+Create a Browserbase-backed account with the same developer API used by Studio:
+
+```sh
+node apps/cli/bin/pixie.js accounts add \
+  --name "Member portal" --origin https://portal.example.test \
+  --provider browserbase --id acct_portal
+node apps/cli/bin/pixie.js connections
+node apps/cli/bin/pixie.js connect acct_portal --env production
+```
+
+`pixie connect` prints a Studio handoff link and waits while the developer logs
+in through Pixie's streamed frame and input relay. Select **Resume** in Studio
+after login; Pixie closes the handoff session, waits for context synchronization,
+and verifies the saved session before marking it connected. Disconnect deletes
+the saved context where possible. If deletion fails, Studio reports the context
+as orphaned. Client keys cannot access these developer-only routes.
+
+The Browserbase Contexts guide and API references document that contexts can
+retain cookies, local storage, and IndexedDB; session creation must request
+`browserSettings.context: { id, persist: true }`; `keepAlive`, `timeout`, and
+`userMetadata` are session options; `connectUrl` is used to attach over CDP;
+`REQUEST_RELEASE` ends a session; running sessions can be listed with
+`status=RUNNING`; and contexts can be deleted. Pixie sends a bounded session
+timeout and Pixie metadata, never stores or returns the provider connection URL,
+and rechecks the session status after requesting release. These are
+documentation-confirmed behaviors, not a statement about Browserbase pricing.
+
+**Observed smoke result:** the capped live run navigated to the httpbin cookie
+setter, released session `94723018…` after 1 second, waited 5 seconds for
+synchronization, then found `pixie_probe=1` in session `9bda4827…` and released
+it after 1 second. The final tagged-running-session count was zero and the
+context was deleted. The redacted output is at
+`/home/ubuntu/evidence/browserbase-smoke.txt`. This is an observation from this
+run, not a guarantee about all Browserbase sessions. To repeat the smoke
+against `https://httpbin.org` (never the local synthetic portal), set the
+existing project's `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID` in the
+environment, then run:
+
+```sh
+node scripts/browserbase-smoke.mjs
+```
+
+The script caps each session at 300 seconds, the total at 600 session-seconds,
+and the session count at three; it always attempts release and context cleanup.
+Provider usage is recorded as Browserbase session seconds/minutes, not estimated
+dollars because plan pricing has not been verified.
