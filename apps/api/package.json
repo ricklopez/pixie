@@ -11,6 +11,7 @@
     "test": "node --test --import tsx test/*.test.ts"
   },
   "dependencies": {
+    "@gateway/adapter": "*",
     "@gateway/definition": "*",
     "@gateway/recorder": "*",
     "@modelcontextprotocol/sdk": "^1.30.0",

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RenameTodoInput",
+  "type": "object",
+  "properties": {
+    "id": { "type": "string", "format": "uuid" },
+    "newTitle": { "type": "string", "minLength": 1, "pattern": "^pixie-demo " },
+    "requestId": { "type": "string", "format": "uuid" }
+  },
+  "required": ["id", "newTitle", "requestId"],
+  "additionalProperties": false
+}

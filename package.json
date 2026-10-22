@@ -12,7 +12,7 @@
   ],
   "scripts": {
     "dev": "concurrently -k -n portal,api,studio -c blue,green,magenta \"npm run dev -w apps/portal\" \"npm run dev -w apps/api\" \"npm run dev -w apps/studio\"",
-    "build": "npm run build -w packages/definition && npm run build -w packages/recorder && npm run build -w apps/portal && npm run build -w apps/api && npm run build -w apps/cli && npm run build -w apps/studio",
+    "build": "npm run build -w packages/definition && npm run build -w packages/recorder && npm run build -w packages/adapter && npm run build -w apps/portal && npm run build -w apps/api && npm run build -w apps/cli && npm run build -w apps/studio",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "eslint .",
     "test": "npm run test --workspaces --if-present",

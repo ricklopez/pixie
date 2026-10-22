@@ -1,0 +1,31 @@
+{
+  "name": "@gateway/adapter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime.d.ts",
+      "default": "./dist/runtime.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test --import tsx test/*.test.ts"
+  },
+  "dependencies": {
+    "@gateway/definition": "*",
+    "@gateway/recorder": "*",
+    "playwright-core": "1.50.1"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.6"
+  }
+}

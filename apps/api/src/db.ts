@@ -97,6 +97,7 @@ CREATE TABLE IF NOT EXISTS adapter_revisions (
   id TEXT PRIMARY KEY, operation_version_id TEXT NOT NULL REFERENCES operation_versions(id), revision INTEGER NOT NULL,
   definition_hash TEXT NOT NULL, engine TEXT NOT NULL, engine_revision TEXT NOT NULL,
   generator TEXT NOT NULL CHECK (generator IN ('template','recorded','manual')),
+  source TEXT,
   automation_id TEXT NOT NULL REFERENCES automations(id), automation_revision INTEGER NOT NULL,
   hash TEXT NOT NULL, UNIQUE (operation_version_id, revision));
 CREATE TABLE IF NOT EXISTS publication_bindings (
@@ -134,6 +135,11 @@ CREATE TABLE IF NOT EXISTS evidence (
 CREATE TABLE IF NOT EXISTS spend_ledger (
   run_id TEXT PRIMARY KEY REFERENCES runs(id), at TEXT NOT NULL, provider_calls INTEGER NOT NULL,
   input_tokens INTEGER NOT NULL, estimated_cost_usd REAL NOT NULL, browser_session_seconds INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS repair_candidates (
+  id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, automation_id TEXT NOT NULL, run_id TEXT NOT NULL,
+  source TEXT NOT NULL, source_hash TEXT NOT NULL, generator TEXT NOT NULL CHECK (generator IN ('manual','model')),
+  state TEXT NOT NULL CHECK (state IN ('validating','awaiting_approval','approved','rejected')),
+  validation TEXT NOT NULL, rejection_reason TEXT, created_at TEXT NOT NULL, approved_at TEXT);
 `;
 
 export function openDatabase(path: string): DatabaseSync {
@@ -148,6 +154,7 @@ export function openDatabase(path: string): DatabaseSync {
   ensureColumn(db, "runs", "operation_version_id", "TEXT");
   ensureColumn(db, "runs", "adapter_revision_id", "TEXT");
   ensureColumn(db, "spend_ledger", "browser_session_seconds", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "adapter_revisions", "source", "TEXT");
   return db;
 }
 

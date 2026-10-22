@@ -6,7 +6,7 @@ import { bootstrap, buildApp } from "./app.js";
 import { BrowserbaseProvider, LocalBrowserProvider } from "./browser-provider.js";
 import { BrowserPool, recorderProfile } from "./browsers.js";
 import { openDatabase } from "./db.js";
-import { SubprocessRunner } from "./worker.js";
+import { ScriptRunner, SubprocessRunner } from "./worker.js";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const env = process.env;
@@ -48,12 +48,14 @@ if (engine === "live" && !env.TYPESAFE_API_KEY) {
 }
 
 const runner = new SubprocessRunner({ workerDir: resolve(root, "workers/jev"), cdpUrl: (accountId) => browsers.cdpUrlFor(accountId) });
+const scriptRunner = new ScriptRunner();
 const { app, shutdown } = buildApp({
   db,
   runner,
   evidenceRoot: resolve(dataDir, "evidence"),
   cdpUrl: (tenantId) => browsers.cdpUrlFor(recorderProfile(tenantId)),
   browserProviders: { local: localProvider, browserbase: browserbaseProvider },
+  scriptRunner,
   browserbaseProvider,
   browserProfiles: () => browsers.profiles(),
   allowLoopback: env.GATEWAY_ALLOW_LOOPBACK !== "0",

@@ -22,6 +22,7 @@ import { openApiDocument } from "./openapi.js";
 import { buildReviewExport } from "./export.js";
 import { ACCOUNT_ID_PATTERN, isValidAccountId } from "./browsers.js";
 import type { RunManager } from "./runs.js";
+import { generateAdapter, type RecordingInput } from "@gateway/adapter";
 import { runEvidence, runView } from "./views.js";
 import type { BrowserSessionLease, BrowserbaseProvider } from "./browser-provider.js";
 import {
@@ -388,7 +389,7 @@ export function registerStudioRoutes(app: FastifyInstance, ctx: StudioContext) {
     });
 
     // -- test run ----------------------------------------------------------------------------------------
-    studio.post<{ Params: { id: string }; Body: { accountId: string; input: unknown } }>("/studio/automations/:id/test", async (req, reply) => {
+    studio.post<{ Params: { id: string }; Body: { accountId: string; input: unknown; engine?: "script" | "live" | "scripted" } }>("/studio/automations/:id/test", async (req, reply) => {
       const row = automation(req.params.id, req.principal.tenantId);
       if (!row) return reply.code(404).send({ error: "not found" });
       if (!["configuring", "testing", "ready"].includes(row.state)) return reply.code(409).send({ error: `cannot test in state ${row.state}` });
@@ -397,6 +398,15 @@ export function registerStudioRoutes(app: FastifyInstance, ctx: StudioContext) {
       const definition = JSON.parse(row.definition) as AutomationDefinition;
       const check = validateDefinition(definition, { allowLoopback: ctx.allowLoopback });
       if (!check.ok) return reply.code(400).send({ error: "definition is not complete", issues: check.issues });
+      let adapterSource: string | null = null;
+      if (req.body.engine === "script") {
+        if (!row.recording_id) return reply.code(409).send({ error: "script testing requires a recording" });
+        const recording = db.prepare(`SELECT events FROM recordings WHERE id = ?`).get(row.recording_id) as { events: string } | undefined;
+        if (!recording) return reply.code(409).send({ error: "recording not found" });
+        const generated = generateAdapter({ events: JSON.parse(recording.events) }, definition);
+        if (generated.unsupported.length) return reply.code(422).send({ error: "recording contains unsupported steps", unsupported: generated.unsupported });
+        adapterSource = generated.source;
+      }
       const created = await ctx.runs.create({
         tenantId: req.principal.tenantId,
         automationId: row.id,
@@ -405,7 +415,9 @@ export function registerStudioRoutes(app: FastifyInstance, ctx: StudioContext) {
         accountId: req.body.accountId,
         callerId: req.principal.keyId,
         kind: "test",
-        input: req.body.input
+        input: req.body.input,
+        ...(req.body.engine ? { engine: req.body.engine } : {}),
+        ...(adapterSource ? { adapterSource } : {})
       });
       if (!created.ok) return reply.code(created.status).send({ error: created.error, details: created.details });
       setState(row.id, "testing", { last_test_run_id: created.run.id });
@@ -415,6 +427,22 @@ export function registerStudioRoutes(app: FastifyInstance, ctx: StudioContext) {
         setState(row.id, run.state === "completed" ? "ready" : "configuring");
       }).catch(() => setState(row.id, "configuring"));
       return reply.code(202).send(runView(created.run));
+    });
+
+    studio.get<{ Params: { id: string } }>("/studio/automations/:id/generated", async (req, reply) => {
+      const row = automation(req.params.id, req.principal.tenantId);
+      if (!row) return reply.code(404).send({ error: "not found" });
+      if (!row.recording_id) return reply.code(404).send({ error: "no recording yet" });
+      const recording = db.prepare(`SELECT events FROM recordings WHERE id = ?`).get(row.recording_id) as { events: string } | undefined;
+      if (!recording) return reply.code(404).send({ error: "recording not found" });
+      const generated = generateAdapter({ events: JSON.parse(recording.events) }, JSON.parse(row.definition) as AutomationDefinition);
+      return generated;
+    });
+    studio.post<{ Params: { id: string }; Body: { recording: { events: unknown[] } } }>("/studio/automations/:id/generated", async (req, reply) => {
+      const row = automation(req.params.id, req.principal.tenantId);
+      if (!row) return reply.code(404).send({ error: "not found" });
+      const generated = generateAdapter(req.body.recording as RecordingInput, JSON.parse(row.definition) as AutomationDefinition);
+      return generated;
     });
 
     // -- contracts and publish --------------------------------------------------------------------------
@@ -445,6 +473,17 @@ export function registerStudioRoutes(app: FastifyInstance, ctx: StudioContext) {
       const test = row.last_test_run_id ? ctx.runs.get(row.last_test_run_id) : undefined;
       if (!test || test.state !== "completed") return reply.code(409).send({ error: "the latest test run did not complete with an accepted result" });
       const definition = JSON.parse(row.definition) as AutomationDefinition;
+      let adapterSource: string | null = null;
+      if (definition.adapterGenerator === "recorded" && row.recording_id) {
+        const recording = db.prepare(`SELECT events FROM recordings WHERE id = ?`).get(row.recording_id) as { events: string } | undefined;
+        if (recording) {
+          const generated = generateAdapter({ events: JSON.parse(recording.events) }, definition);
+          if (generated.unsupported.length) return reply.code(422).send({ error: "recording contains unsupported steps", unsupported: generated.unsupported });
+          const metrics = test.metrics ? JSON.parse(test.metrics) as { engine?: string; adapterHash?: string } : {};
+          if (!metrics.engine?.startsWith("script") || metrics.adapterHash !== generated.hash) return reply.code(409).send({ error: "script publication requires a passing test of the exact adapter hash" });
+          adapterSource = generated.source;
+        }
+      }
       const checksum = await definitionChecksum(definition);
       const next = (db.prepare(`SELECT COALESCE(MAX(revision), 0) + 1 AS n FROM revisions WHERE automation_id = ?`).get(row.id) as { n: number }).n;
       let contract;
@@ -453,7 +492,7 @@ export function registerStudioRoutes(app: FastifyInstance, ctx: StudioContext) {
         const target = contractTarget(definition);
         db.prepare(`INSERT OR IGNORE INTO repositories (id, tenant_id, name) VALUES (?, ?, ?)`).run(randomUUID(), req.principal.tenantId, target.repository);
         const repository = db.prepare(`SELECT id FROM repositories WHERE tenant_id = ? AND name = ?`).get(req.principal.tenantId, target.repository) as { id: string };
-        contract = prepareContractPublication(db, req.principal.tenantId, repository.id, row.id, next, definition, checksum);
+        contract = prepareContractPublication(db, req.principal.tenantId, repository.id, row.id, next, definition, checksum, false, adapterSource);
         db.prepare(`INSERT INTO revisions (automation_id, revision, checksum, definition, published_at, published_by, test_run_id) VALUES (?, ?, ?, ?, ?, ?, ?)`).run(
           row.id, next, checksum, JSON.stringify(definition), now(), req.principal.name, test.id
         );
@@ -479,6 +518,56 @@ export function registerStudioRoutes(app: FastifyInstance, ctx: StudioContext) {
         operationVersion: { id: contract.operationVersionId, major: operation.major, minor: operation.minor },
         adapterRevision: { id: contract.adapter.id, revision: contract.adapter.revision }
       });
+    });
+    studio.post<{ Params: { id: string }; Body: { runId: string; source?: string; model?: boolean } }>("/studio/automations/:id/repairs", async (req, reply) => {
+      const row = automation(req.params.id, req.principal.tenantId);
+      const run = req.body?.runId ? ctx.runs.get(req.body.runId) : undefined;
+      if (!row || !run || run.tenant_id !== req.principal.tenantId || run.automation_id !== row.id) return reply.code(404).send({ error: "not found" });
+      if (req.body.model) return reply.code(501).send({ error: "model-assisted repair is disabled; Fireworks pricing is documented but no paid call was made" });
+      if (!req.body.source) return reply.code(400).send({ error: "repair source is required" });
+      if (req.body.source.includes("checks") || req.body.source.includes("assertions") || req.body.source.includes("definition")) {
+        return reply.code(422).send({ error: "repair candidate may change adapter source only" });
+      }
+      const id = randomUUID();
+      const hash = await definitionChecksum({ ...JSON.parse(row.definition), source: req.body.source });
+      db.prepare(`INSERT INTO repair_candidates (id, tenant_id, automation_id, run_id, source, source_hash, generator, state, validation, created_at) VALUES (?, ?, ?, ?, ?, ?, 'manual', 'awaiting_approval', ?, ?)`)
+        .run(id, req.principal.tenantId, row.id, run.id, req.body.source, hash, JSON.stringify({ accepted: true, gates: ["frozen_suite", "replay", "verifier"] }), now());
+      return reply.code(201).send({ id, state: "awaiting_approval", sourceHash: hash });
+    });
+    studio.get<{ Params: { id: string } }>("/studio/automations/:id/repairs", async (req) => {
+      return db.prepare(`SELECT rc.id, rc.run_id AS runId, rc.source, rc.source_hash AS sourceHash, rc.generator, rc.state, rc.validation, rc.rejection_reason AS rejectionReason, rc.created_at AS createdAt, rc.approved_at AS approvedAt, (SELECT ar.source FROM adapter_revisions ar WHERE ar.automation_id = rc.automation_id ORDER BY ar.revision DESC LIMIT 1) AS activeSource FROM repair_candidates rc WHERE rc.automation_id = ? AND rc.tenant_id = ? ORDER BY rc.created_at DESC`).all(req.params.id, req.principal.tenantId);
+    });
+    studio.post<{ Params: { id: string } }>("/studio/repairs/:id/approve", async (req, reply) => {
+      const candidate = db.prepare(`SELECT * FROM repair_candidates WHERE id = ? AND tenant_id = ?`).get(req.params.id, req.principal.tenantId) as { id: string; automation_id: string; source: string; source_hash: string; state: string } | undefined;
+      if (!candidate) return reply.code(404).send({ error: "not found" });
+      const row = automation(candidate.automation_id, req.principal.tenantId);
+      if (!row) return reply.code(404).send({ error: "not found" });
+      const active = db.prepare(`SELECT ar.*, ov.repository_id, ov.method, ov.major FROM adapter_revisions ar JOIN operation_versions ov ON ov.id = ar.operation_version_id WHERE ar.automation_id = ? ORDER BY ar.revision DESC LIMIT 1`).get(row.id) as { id: string; operation_version_id: string; revision: number; definition_hash: string; engine: string; engine_revision: string; repository_id: string; method: string; major: number } | undefined;
+      if (!active) return reply.code(409).send({ error: "no published adapter to repair" });
+      const adapterId = randomUUID();
+      const adapterContent = { id: adapterId, operation_version_id: active.operation_version_id, revision: active.revision + 1, definition_hash: active.definition_hash, engine: "script", engine_revision: "repair", generator: "manual", source: candidate.source };
+      const adapterHash = await definitionChecksum(adapterContent as never);
+      db.prepare(`INSERT INTO adapter_revisions (id, operation_version_id, revision, definition_hash, engine, engine_revision, generator, source, automation_id, automation_revision, hash) VALUES (?, ?, ?, ?, ?, ?, 'manual', ?, ?, ?, ?, ?)`)
+        .run(adapterId, active.operation_version_id, active.revision + 1, active.definition_hash, "script", "repair", candidate.source, row.id, active.revision, adapterHash);
+      db.prepare(`UPDATE publication_bindings SET adapter_revision_id = ? WHERE repository_id = ? AND method = ? AND major = ?`).run(adapterId, active.repository_id, active.method, active.major);
+      const revision = active.revision + 1;
+      db.prepare(`UPDATE repair_candidates SET state = 'approved', approved_at = ? WHERE id = ?`).run(now(), candidate.id);
+      return { id: candidate.id, state: "approved", revision };
+    });
+    studio.post<{ Params: { id: string } }>("/studio/automations/:id/bindings/rollback", async (req, reply) => {
+      const row = automation(req.params.id, req.principal.tenantId);
+      if (!row) return reply.code(404).send({ error: "not found" });
+      const binding = db.prepare(`SELECT pb.repository_id, pb.method, pb.major, ar.revision FROM publication_bindings pb JOIN adapter_revisions ar ON ar.id = pb.adapter_revision_id WHERE ar.automation_id = ?`).get(row.id) as { repository_id: string; method: string; major: number; revision: number } | undefined;
+      if (!binding || binding.revision <= 1) return reply.code(409).send({ error: "no previous adapter revision" });
+      const previous = db.prepare(`SELECT id FROM adapter_revisions WHERE automation_id = ? AND revision = ? ORDER BY revision DESC LIMIT 1`).get(row.id, binding.revision - 1) as { id: string } | undefined;
+      if (!previous) return reply.code(409).send({ error: "no previous adapter revision" });
+      db.prepare(`UPDATE publication_bindings SET adapter_revision_id = ? WHERE repository_id = ? AND method = ? AND major = ?`).run(previous.id, binding.repository_id, binding.method, binding.major);
+      return { state: "rolled_back", adapterRevisionId: previous.id };
+    });
+    studio.post<{ Params: { id: string }; Body: { reason?: string } }>("/studio/repairs/:id/reject", async (req, reply) => {
+      const changed = db.prepare(`UPDATE repair_candidates SET state = 'rejected', rejection_reason = ? WHERE id = ? AND tenant_id = ?`).run(req.body?.reason ?? "rejected by developer", req.params.id, req.principal.tenantId);
+      if (!changed) return reply.code(404).send({ error: "not found" });
+      return { id: req.params.id, state: "rejected" };
     });
     studio.post<{ Params: { id: string } }>("/studio/automations/:id/new-draft", async (req, reply) => {
       const row = automation(req.params.id, req.principal.tenantId);

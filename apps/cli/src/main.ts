@@ -51,6 +51,13 @@ const HELP = `pixie — local developer CLI for the Pixie gateway (runs from thi
   pixie definition set <id> <file>
   pixie draft <id>                fork a published automation into a new draft
   pixie test <id> [--account <id>] [--input '<json>'] [--follow]
+  pixie generate <id> [--recording <file>]
+  pixie test <id> --engine script
+  pixie repair <id> --run <runId> [--source file | --model]
+  pixie repairs <id>
+  pixie approve <repairId>
+  pixie reject <repairId> --reason <text>
+  pixie rollback <id>
   pixie publish <id>              publish the tested definition
   pixie models                    list published output models
   pixie repos                     list published repositories
@@ -751,9 +758,10 @@ export async function testRun(
   input: unknown,
   out: Out = stdio,
   follow = false,
-  jsonMode = false
+  jsonMode = false,
+  engine?: string
 ): Promise<number> {
-  const started = await studioRequest(project, "POST", `/studio/automations/${encodeURIComponent(automationId)}/test`, { accountId, input });
+  const started = await studioRequest(project, "POST", `/studio/automations/${encodeURIComponent(automationId)}/test`, { accountId, input, ...(engine ? { engine } : {}) });
   if (started.status !== 202) return reportApiError(out, "test", started, jsonMode);
   const runId = String(asObject(started.json)?.id ?? "");
   if (!follow) {
@@ -802,6 +810,26 @@ export async function publish(project: Project, automationId: string, out: Out =
     `invoke as a client:\n  pixie invoke ${automationId} --revision ${revision} --account ${project.accountId} --input '{}' --follow`
   );
   return 0;
+}
+
+async function adapterRequest(project: Project, method: string, path: string, body: unknown, out: Out, jsonMode: boolean): Promise<number> {
+  const response = await studioRequest(project, method, path, body);
+  if (response.status < 200 || response.status >= 300) return reportApiError(out, "adapter", response, jsonMode);
+  const result = asObject(response.json);
+  const unsupported = result?.unsupported;
+  if (Array.isArray(unsupported) && unsupported.length > 0) {
+    out.error(`adapter generation failed: ${JSON.stringify(unsupported)}`);
+    return 1;
+  }
+  if (jsonMode) emitApiJson(out, response);
+  else out.log(JSON.stringify(response.json, null, 2));
+  return 0;
+}
+
+async function generate(project: Project, id: string, recordingFile: string | undefined, out: Out, jsonMode: boolean): Promise<number> {
+  if (!recordingFile) return adapterRequest(project, "GET", `/studio/automations/${encodeURIComponent(id)}/generated`, undefined, out, jsonMode);
+  const recording = JSON.parse(readFileSync(resolve(recordingFile), "utf8")) as { events: unknown[] };
+  return adapterRequest(project, "POST", `/studio/automations/${encodeURIComponent(id)}/generated`, { recording }, out, jsonMode);
 }
 
 async function contractList(project: Project, kind: "models" | "repositories" | "operations", repo: string | undefined, out: Out, jsonMode: boolean): Promise<number> {
@@ -1094,6 +1122,12 @@ export async function main(argv: string[], out: Out = stdio): Promise<number> {
     repo?: string;
     method?: string;
     version?: string;
+    engine?: string;
+    source?: string;
+    run?: string;
+    model?: boolean;
+    reason?: string;
+    recording?: string;
   }
   let parsed: { values: CliOptions; positionals: string[] };
   try {
@@ -1124,6 +1158,12 @@ export async function main(argv: string[], out: Out = stdio): Promise<number> {
         repo: { type: "string" },
         method: { type: "string" },
         version: { type: "string" },
+        engine: { type: "string" },
+        source: { type: "string" },
+        run: { type: "string" },
+        model: { type: "boolean" },
+        reason: { type: "string" },
+        recording: { type: "string" },
         ref: { type: "string" },
         revision: { type: "string" },
         role: { type: "string" },
@@ -1216,8 +1256,29 @@ export async function main(argv: string[], out: Out = stdio): Promise<number> {
           out.error(`pixie test: --input must be valid JSON (${(error as Error).message})`);
           return 2;
         }
-        return testRun(project, arg, values.account ?? project.accountId, input, out, values.follow === true, jsonMode);
+        return testRun(project, arg, values.account ?? project.accountId, input, out, values.follow === true, jsonMode, values.engine as string | undefined);
       }
+      case "generate":
+        if (!required(arg, "pixie generate <automationId> [--recording <file>]")) return 2;
+        return generate(project, arg, values.recording, out, jsonMode);
+      case "repair": {
+        if (!required(arg, "pixie repair <automationId> --run <runId> [--source file | --model]")) return 2;
+        let source: string | undefined;
+        if (values.source) source = readFileSync(String(values.source), "utf8");
+        return adapterRequest(project, "POST", `/studio/automations/${encodeURIComponent(arg)}/repairs`, { runId: values.run, source, model: values.model === true }, out, jsonMode);
+      }
+      case "repairs":
+        if (!required(arg, "pixie repairs <automationId>")) return 2;
+        return adapterRequest(project, "GET", `/studio/automations/${encodeURIComponent(arg)}/repairs`, {}, out, jsonMode);
+      case "approve":
+        if (!required(arg, "pixie approve <repairId>")) return 2;
+        return adapterRequest(project, "POST", `/studio/repairs/${encodeURIComponent(arg)}/approve`, {}, out, jsonMode);
+      case "reject":
+        if (!required(arg, "pixie reject <repairId> --reason <text>")) return 2;
+        return adapterRequest(project, "POST", `/studio/repairs/${encodeURIComponent(arg)}/reject`, { reason: values.reason }, out, jsonMode);
+      case "rollback":
+        if (!required(arg, "pixie rollback <automationId>")) return 2;
+        return adapterRequest(project, "POST", `/studio/automations/${encodeURIComponent(arg)}/bindings/rollback`, {}, out, jsonMode);
       case "publish":
         if (!required(arg, "pixie publish <automationId>")) return 2;
         return publish(project, arg, out, jsonMode);

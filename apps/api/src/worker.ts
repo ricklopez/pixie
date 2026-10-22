@@ -1,13 +1,15 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import type { AutomationDefinition, ListItem, MutationCheck } from "@gateway/definition";
+import { runScript } from "@gateway/adapter";
 
 /** NDJSON protocol shared with workers/jev/gateway_worker/main.py. */
 export interface WorkerCommand {
   type: "run";
   runId: string;
   accountId: string;
-  engine: "live" | "scripted" | "failing";
+  engine: "live" | "scripted" | "failing" | "script";
+  adapterSource?: string;
   script?: { operation: string; label?: string }[];
   definition: AutomationDefinition;
   input: Record<string, string | number | boolean>;
@@ -67,6 +69,49 @@ export interface WorkerHandle {
 
 export interface WorkerRunner {
   start(command: WorkerCommand, onEvent: (event: WorkerEvent) => void, cdpUrlOverride?: string): WorkerHandle;
+}
+
+export class ScriptRunner implements WorkerRunner {
+  start(command: WorkerCommand, onEvent: (event: WorkerEvent) => void, cdpUrlOverride?: string): WorkerHandle {
+    const started = Date.now();
+    let cancelled = false;
+    const finished = (async () => {
+      if (cancelled) return { type: "finished", outcome: "cancelled", reason: "cancelled", elapsedMs: 0, modelCalls: 0, providerCalls: 0, actions: 0 } satisfies FinishedEvent;
+      if (!command.adapterSource) return { type: "finished", outcome: "failed", reason: "script adapter source is missing", elapsedMs: 0, modelCalls: 0, providerCalls: 0, actions: 0 } satisfies FinishedEvent;
+      onEvent({ type: "started", runId: command.runId, engine: "script" });
+      const result = await runScript({
+        source: command.adapterSource,
+        cdpUrl: cdpUrlOverride ?? "",
+        input: command.input,
+        startUrl: command.definition.startUrl,
+        allowedOrigins: command.definition.allowedOrigins,
+        maxActions: command.definition.limits.maxActions,
+        deadlineMs: command.definition.limits.deadlineMs
+      });
+      if (!result.error) {
+        const values = (result.result && typeof result.result === "object" ? result.result : {}) as Record<string, unknown>;
+        const outputs = Object.fromEntries(command.definition.outputs.map((field) => [field.name, {
+          value: (values[field.name] as string | ListItem[] | null | undefined) ?? null,
+          source: "script",
+          checkpointId: "script"
+        }]));
+        onEvent({ type: "extraction", outputs, observedAt: new Date().toISOString(), finalUrl: result.finalUrl ?? command.definition.startUrl });
+      }
+      const event: FinishedEvent = {
+        type: "finished",
+        outcome: result.error ? "failed" : "extracted",
+        reason: result.error ?? null,
+        elapsedMs: Date.now() - started,
+        modelCalls: 0,
+        providerCalls: 0,
+        actions: result.actions
+      };
+      if (result.error) onEvent({ type: "policy_rejected", checkpointId: "script", code: "script_failed", reason: result.error, action: null, kind: null });
+      onEvent(event);
+      return event;
+    })();
+    return { finished, cancel: () => { cancelled = true; } };
+  }
 }
 
 export interface SubprocessRunnerOptions {

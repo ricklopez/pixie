@@ -59,6 +59,7 @@ interface AdapterRevisionRecord {
   engine: string;
   engine_revision: string;
   generator: "template" | "recorded" | "manual";
+  source?: string | null;
   automation_id: string;
   automation_revision: number;
   hash: string;
@@ -135,7 +136,8 @@ export function prepareContractPublication(
   automationRevision: number,
   definition: AutomationDefinition,
   definitionHash: string,
-  allowUndeclaredIdentity = false
+  allowUndeclaredIdentity = false,
+  adapterSource?: string | null
 ): ContractPublicationPlan {
   const preview = previewContract(db, tenantId, definition);
   if (!preview.publishable && !allowUndeclaredIdentity) throw new Error(preview.error);
@@ -186,6 +188,7 @@ export function prepareContractPublication(
     engine: definition.engine,
     engine_revision: definition.engineRevision,
     generator: definition.adapterGenerator ?? (definition.sourceRecordingId ? "recorded" : "manual"),
+    source: adapterSource ?? null,
     automation_id: automationId,
     automation_revision: automationRevision
   };
@@ -230,8 +233,8 @@ export function persistContractPublication(db: DatabaseSync, plan: ContractPubli
         plan.operation.hash
       );
   }
-  db.prepare(`INSERT INTO adapter_revisions (id, operation_version_id, revision, definition_hash, engine, engine_revision, generator, automation_id, automation_revision, hash)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+  db.prepare(`INSERT INTO adapter_revisions (id, operation_version_id, revision, definition_hash, engine, engine_revision, generator, source, automation_id, automation_revision, hash)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(
       plan.adapter.id,
       plan.adapter.operation_version_id,
@@ -240,6 +243,7 @@ export function persistContractPublication(db: DatabaseSync, plan: ContractPubli
       plan.adapter.engine,
       plan.adapter.engine_revision,
       plan.adapter.generator,
+      plan.adapter.source ?? null,
       plan.adapter.automation_id,
       plan.adapter.automation_revision,
       plan.adapter.hash

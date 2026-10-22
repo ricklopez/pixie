@@ -49,7 +49,8 @@ export function buildApp(options: AppOptions): { app: FastifyInstance; runs: Run
     runner: options.runner,
     evidenceRoot: options.evidenceRoot,
     selectEngine: options.selectEngine,
-    browserProviders: options.browserProviders
+    browserProviders: options.browserProviders,
+    scriptRunner: options.scriptRunner
   });
   app.get("/health", async () => ({ ok: true, time: now() }));
   const studio = registerStudioRoutes(app, {
