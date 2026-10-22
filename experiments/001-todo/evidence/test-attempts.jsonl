@@ -50,3 +50,16 @@
 {"startedAt":"2026-10-22T05:27:54.678Z","finishedAt":"2026-10-22T05:27:55.303Z","name":"persists the idempotency ledger across runner instances","outcome":"passed"}
 {"startedAt":"2026-10-22T05:27:55.304Z","finishedAt":"2026-10-22T05:27:55.308Z","name":"requires harness authentication without protecting application write routes","outcome":"passed"}
 {"startedAt":"2026-10-22T05:27:55.308Z","finishedAt":"2026-10-22T05:28:00.234Z","name":"reconciles uncertain create writes without issuing a second create","outcome":"passed"}
+{"startedAt":"2026-10-22T17:32:38.145Z","finishedAt":"2026-10-22T17:32:38.159Z","name":"verifies the frozen contract lock and deterministic generated source hashes","outcome":"passed"}
+{"startedAt":"2026-10-22T17:32:38.161Z","finishedAt":"2026-10-22T17:32:38.161Z","name":"fails closed with GeneratorGap when a trace action has no locator","outcome":"passed"}
+{"startedAt":"2026-10-22T17:32:38.162Z","finishedAt":"2026-10-22T17:32:38.162Z","name":"counts only named model hosts for local request-blocking instrumentation","outcome":"passed"}
+{"startedAt":"2026-10-22T17:32:38.163Z","finishedAt":"2026-10-22T17:32:38.355Z","name":"blocks model-host requests in Node fetch/http/https and Playwright without network access","outcome":"passed"}
+{"startedAt":"2026-10-22T17:32:38.355Z","finishedAt":"2026-10-22T17:32:38.355Z","name":"refuses paid authoring/provider calls without explicit opt-in and sanitizes proposals","outcome":"passed"}
+{"startedAt":"2026-10-22T17:32:38.141Z","finishedAt":"2026-10-22T17:32:42.114Z","name":"accepts only the human-authored locator repair after baseline and locator-break checks","outcome":"passed"}
+{"startedAt":"2026-10-22T17:32:42.115Z","finishedAt":"2026-10-22T17:32:44.215Z","name":"rejects contract-scope changes and requires approval before promotion","outcome":"passed"}
+{"startedAt":"2026-10-22T17:32:37.867Z","finishedAt":"2026-10-22T17:32:57.512Z","name":"runs ten exact CRUD sequences with Unicode, punctuation, and unrelated rows","outcome":"passed"}
+{"startedAt":"2026-10-22T17:32:57.513Z","finishedAt":"2026-10-22T17:33:05.815Z","name":"records actual baseline-script outcomes for every fixture variant","outcome":"passed"}
+{"startedAt":"2026-10-22T17:33:05.815Z","finishedAt":"2026-10-22T17:33:07.403Z","name":"enforces idempotency, conflict, exact target guards, and prefix rejection","outcome":"passed"}
+{"startedAt":"2026-10-22T17:33:07.403Z","finishedAt":"2026-10-22T17:33:07.860Z","name":"persists the idempotency ledger across runner instances","outcome":"passed"}
+{"startedAt":"2026-10-22T17:33:07.861Z","finishedAt":"2026-10-22T17:33:07.863Z","name":"requires harness authentication without protecting application write routes","outcome":"passed"}
+{"startedAt":"2026-10-22T17:33:07.863Z","finishedAt":"2026-10-22T17:33:11.742Z","name":"reconciles uncertain create writes without issuing a second create","outcome":"passed"}

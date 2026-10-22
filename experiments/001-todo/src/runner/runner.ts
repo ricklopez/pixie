@@ -82,7 +82,7 @@ export class TodoRunner {
     if (!requestId || !uuidPattern.test(requestId)) {
       return this.result("rejected", op, undefined, "writes require a UUID requestId", false, 0, 0);
     }
-    const payloadHash = sha256(canonicalJson({ op, input }));
+    const payloadHash = sha256(canonicalJson({ baseUrl: new URL(baseUrl).href, op, input }));
     const existing = this.db.prepare("SELECT * FROM ledger WHERE request_id=?").get(requestId) as unknown as LedgerRow | undefined;
     if (existing) {
       if (existing.payload_hash !== payloadHash || existing.op !== op) {
@@ -206,11 +206,9 @@ export class TodoRunner {
       const { id, title, done } = row;
       return { id, title, done };
     }
-    if (byRequestId.length > 0) return undefined;
-    const byTitle = rows.filter((row) => row.title === input.title);
-    if (byTitle.length !== 1) return undefined;
-    const { id, title, done } = byTitle[0]!;
-    return { id, title, done };
+    // A matching title is not evidence that this request created the row.
+    // Only the fixture's explicit request identity can reconcile this write.
+    return undefined;
   }
 
   private async reconcileUncertain(
