@@ -138,6 +138,19 @@ and stopping conditions. Do not build the broader framework or begin this experi
 The prototype used [Jev Ultrafast](https://github.com/browser-use/jev-ultrafast) as its browser decision engine.
 
 ## Run the app locally
+### MCP
+
+Published automations are exposed through streamable HTTP MCP at `http://127.0.0.1:4180/mcp`. Configure an MCP client without copying a secret into its config:
+
+```sh
+pixie mcp config --client-token-env GATEWAY_CLIENT_TOKEN
+pixie mcp call list_operations --args '{}'
+```
+
+`invoke` starts a run and returns its handle immediately; poll `get_run` for state, verification, and the accepted result. Runs awaiting sign-in return a Studio connections handoff URL. The API and MCP transports share the published-operation service and stored results.
+
+With the scripted local API running, exercise the end-to-end MCP flow using `scripts/e2e-mcp.sh`.
+
 
 Requires Node.js 24 (the workspace requires Node.js 22.13 or newer), Python 3, `uv`, and local Chrome.
 

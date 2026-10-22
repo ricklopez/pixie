@@ -4,6 +4,8 @@ import { dirname, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { TODO_TEMPLATES } from "@gateway/definition";
 import { resolveChromeExecutable } from "@gateway/recorder";
 
@@ -62,6 +64,8 @@ const HELP = `pixie — local developer CLI for the Pixie gateway (runs from thi
       [--idempotency-key <key>] [--follow]
   pixie openapi <id> [-o file]    retrieve the published OpenAPI document
   pixie export <id> [-o file]     retrieve the review export
+  pixie mcp config [--client-token-env NAME]
+  pixie mcp call <tool> --args '<json>'
   pixie keys create <name> --role client|developer
   pixie open [runId|automationId] print a Studio URL and open it when $BROWSER is set
 
@@ -129,6 +133,47 @@ export interface Check {
   ok: boolean;
   level: "fail" | "warn";
   detail: string;
+}
+
+function mcpConfig(project: Project, tokenEnv: string, out: Out) {
+  const snippet = {
+    mcpServers: {
+      pixie: {
+        url: `${project.apiUrl.replace(/\/+$/, "")}/mcp`,
+        headers: { Authorization: `Bearer \${${tokenEnv}}` }
+      }
+    }
+  };
+  out.log(JSON.stringify(snippet, null, 2));
+  return 0;
+}
+
+async function mcpCall(project: Project, tool: string, argsText: string | undefined, out: Out) {
+  if (!argsText) return usage(out, "pixie mcp call <tool> --args '<json>'");
+  let args: unknown;
+  try {
+    args = JSON.parse(argsText) as unknown;
+  } catch (error) {
+    out.error(`pixie mcp: --args must be valid JSON (${(error as Error).message})`);
+    return 2;
+  }
+  if (!args || typeof args !== "object" || Array.isArray(args)) {
+    out.error("pixie mcp: --args must be a JSON object");
+    return 2;
+  }
+  const token = process.env.GATEWAY_CLIENT_TOKEN ?? project.clientToken ?? "client-token-local";
+  const transport = new StreamableHTTPClientTransport(new URL(`${project.apiUrl.replace(/\/+$/, "")}/mcp`), {
+    requestInit: { headers: { authorization: `Bearer ${token}` } }
+  });
+  const client = new Client({ name: "pixie-cli", version: "0.1.0" });
+  try {
+    await client.connect(transport);
+    const result = await client.callTool({ name: tool, arguments: args as Record<string, unknown> });
+    out.log(JSON.stringify(result, null, 2));
+    return result.isError ? 1 : 0;
+  } finally {
+    await client.close();
+  }
 }
 
 async function reachable(url: string): Promise<boolean> {
@@ -985,6 +1030,8 @@ export async function main(argv: string[], out: Out = stdio): Promise<number> {
     help?: boolean;
     id?: string;
     "idempotency-key"?: string;
+    args?: string;
+    "client-token-env"?: string;
     input?: string;
     json?: boolean;
     name?: string;
@@ -1008,6 +1055,7 @@ export async function main(argv: string[], out: Out = stdio): Promise<number> {
       allowPositionals: true,
       options: {
         account: { type: "string" },
+        args: { type: "string" },
         automation: { type: "string" },
         "allowed-origin": { type: "string", multiple: true },
         events: { type: "boolean" },
@@ -1016,6 +1064,7 @@ export async function main(argv: string[], out: Out = stdio): Promise<number> {
         help: { type: "boolean", short: "h" },
         id: { type: "string" },
         "idempotency-key": { type: "string" },
+        "client-token-env": { type: "string" },
         input: { type: "string" },
         json: { type: "boolean" },
         name: { type: "string" },
@@ -1177,6 +1226,10 @@ export async function main(argv: string[], out: Out = stdio): Promise<number> {
       case "open":
         if (subarg) return usage(out, "pixie open [runId|automationId]");
         return openStudio(project, out, arg, jsonMode);
+      case "mcp":
+        if (arg === "config") return mcpConfig(project, values["client-token-env"] ?? "GATEWAY_CLIENT_TOKEN", out);
+        if (arg === "call") return mcpCall(project, subarg ?? "", values.args, out);
+        return usage(out, "pixie mcp config [--client-token-env NAME] | pixie mcp call <tool> --args '<json>'");
       default:
         out.error(`pixie ${command}: unknown command\n\n${HELP}`);
         return 2;

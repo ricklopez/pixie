@@ -691,6 +691,14 @@ function ApiTab({ automation, accounts }: { automation: Automation; accounts: Ac
 
   const body = { revision, accountId, input: coerceInput(automation, values) };
   const curl = `curl -X POST ${location.origin}/v1/automations/${automation.id}/runs \\\n  -H "Authorization: Bearer $GATEWAY_CLIENT_TOKEN" -H "Content-Type: application/json" -H "Idempotency-Key: $(uuidgen)" \\\n  -d '${JSON.stringify(body)}'`;
+  const mcpConfig = JSON.stringify({
+    mcpServers: {
+      pixie: {
+        url: `${location.origin}/mcp`,
+        headers: { Authorization: "Bearer ${GATEWAY_CLIENT_TOKEN}" }
+      }
+    }
+  }, null, 2);
 
   const invoke = async () => {
     const token = getClientToken();
@@ -758,6 +766,12 @@ function ApiTab({ automation, accounts }: { automation: Automation; accounts: Ac
             ))}
           </tbody>
         </table>
+      </div>
+      <div className="panel">
+        <h2>MCP</h2>
+        <p>Streamable HTTP endpoint: <code>{location.origin}/mcp</code></p>
+        <pre>{mcpConfig}</pre>
+        <p className="muted"><code>invoke</code> starts a run and immediately returns its handle. Use <code>get_run</code> to read status, verification, and the accepted result. If a run reaches <code>awaiting_auth</code>, follow its Studio connections handoff URL, sign in, then invoke again.</p>
       </div>
       <div className="grid2">
         <div className="panel">

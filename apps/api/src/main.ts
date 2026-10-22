@@ -15,6 +15,7 @@ const dataDir = resolve(env.GATEWAY_DATA_DIR ?? resolve(root, "artifacts/gateway
 const portalOrigin = env.GATEWAY_PORTAL_ORIGIN ?? "http://127.0.0.1:4174";
 const engine = (env.GATEWAY_ENGINE ?? "live") as "live" | "scripted";
 const publicBaseUrl = env.GATEWAY_PUBLIC_URL ?? `http://127.0.0.1:${port}`;
+const studioBaseUrl = env.GATEWAY_STUDIO_URL ?? "http://127.0.0.1:5173";
 
 mkdirSync(dataDir, { recursive: true });
 const db = openDatabase(resolve(dataDir, "gateway.sqlite"));
@@ -57,6 +58,7 @@ const { app, shutdown } = buildApp({
   browserProfiles: () => browsers.profiles(),
   allowLoopback: env.GATEWAY_ALLOW_LOOPBACK !== "0",
   publicBaseUrl,
+  studioBaseUrl,
   logger: env.GATEWAY_LOG !== "0",
   selectEngine: (definition, input) =>
     engine === "live"
