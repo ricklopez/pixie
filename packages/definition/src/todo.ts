@@ -12,6 +12,7 @@ export const TODO_PREFIX = "pixie-demo ";
  * and carry the Pixie demo prefix. Delete moves a task to an in-memory Trash (restorable until reload only).
  */
 const tasks: ListSpec = { item: "li.todo-item", text: ".todo-content", completed: ".todo-content.completed" };
+const TODO_ITEM_IDENTITY = "tasks.text";
 
 const affordances: Affordance[] = [
   { selector: "li.todo-item .btn-delete", role: "button", label: "Delete task: {{text}}", item: "li.todo-item", itemText: ".todo-content" },
@@ -24,7 +25,7 @@ const affordances: Affordance[] = [
 function base(id: string, name: string, origin: string): AutomationDefinition {
   return {
     ...newDefinition({ id, name, startUrl: `${origin}/`, allowedOrigins: [origin] }),
-    keyFields: ["tasks"],
+    keyFields: [TODO_ITEM_IDENTITY],
     adapterGenerator: "template",
     lists: { tasks },
     affordances,

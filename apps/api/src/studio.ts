@@ -111,7 +111,12 @@ export function registerStudioRoutes(app: FastifyInstance, ctx: StudioContext) {
       return requireRole(db, "developer")(req, reply);
     });
 
-    studio.get("/studio/me", async (req) => ({ tenantId: req.principal.tenantId, name: req.principal.name, role: req.principal.role }));
+    studio.get("/studio/me", async (req) => ({
+      tenantId: req.principal.tenantId,
+      name: req.principal.name,
+      role: req.principal.role,
+      publicApiUrl: ctx.publicBaseUrl
+    }));
 
     // -- accounts and keys -------------------------------------------------------------------------------
     studio.get("/studio/accounts", async (req) => {
@@ -482,7 +487,8 @@ export function registerStudioRoutes(app: FastifyInstance, ctx: StudioContext) {
       const id = `auto-${randomUUID().slice(0, 8)}`;
       const source = JSON.parse(row.definition) as AutomationDefinition;
       const target = contractTarget(source);
-      const definition = { ...source, id, name: `${row.name} (draft)`, repository: target.repository, method: target.method };
+      const name = `${row.name.replace(/(?: \(draft\))+$/, "")} (draft)`;
+      const definition = { ...source, id, name, repository: target.repository, method: target.method };
       db.prepare(`INSERT INTO automations (id, tenant_id, name, state, definition, recording_id, created_at, updated_at) VALUES (?, ?, ?, 'configuring', ?, ?, ?, ?)`).run(
         id, req.principal.tenantId, definition.name, JSON.stringify(definition), row.recording_id, now(), now()
       );

@@ -133,6 +133,7 @@ export interface AutomationDefinition {
   name: string;
   repository?: string;
   method?: string;
+  /** Stable output fields or list-item text paths, such as `tasks.text`. */
   keyFields?: string[];
   adapterGenerator?: AdapterGenerator;
   engine: typeof ENGINE;

@@ -8,6 +8,8 @@ import {
   inputJsonSchema,
   outputJsonSchema,
   suggestFromRecording,
+  TODO_TEMPLATES,
+  todoDefinition,
   validateDefinition,
   validateInput,
   verifyExtraction,
@@ -19,12 +21,22 @@ const def = eligibilityOverviewDefinition();
 test("reference definition validates and has a stable checksum", async () => {
   const result = validateDefinition(def, { allowLoopback: true });
   assert.ok(result.ok, JSON.stringify(result));
+  assert.deepEqual(def.keyFields, ["memberId"]);
   const a = await definitionChecksum(def);
   const b = await definitionChecksum(JSON.parse(JSON.stringify({ ...def, name: def.name })));
   assert.equal(a, b);
   const changed = await definitionChecksum({ ...def, name: "Renamed" });
   assert.notEqual(a, changed);
   assert.equal(canonicalJson({ b: 1, a: [{ d: 1, c: 2 }] }), '{"a":[{"c":2,"d":1}],"b":1}');
+});
+
+test("Todo templates use the exact list-item text identity", () => {
+  for (const template of TODO_TEMPLATES) {
+    const definition = todoDefinition(template);
+    assert.deepEqual(definition.keyFields, ["tasks.text"]);
+    const result = validateDefinition(definition, { allowLoopback: true });
+    assert.ok(result.ok, `${template}: ${JSON.stringify(result)}`);
+  }
 });
 
 test("loopback origins are rejected unless the synthetic exception is enabled", () => {

@@ -20,7 +20,7 @@ export function navigate(path: string) {
 export function App() {
   const [route, setRoute] = useState<Route>(() => parseRoute(location.hash));
   const [token, setTokenState] = useState(getToken());
-  const [me, setMe] = useState<{ tenantId: string; name: string; role: string } | null>(null);
+  const [me, setMe] = useState<{ tenantId: string; name: string; role: string; publicApiUrl: string } | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [automations, setAutomations] = useState<Automation[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -35,7 +35,7 @@ export function App() {
     if (!getToken()) return;
     try {
       const [who, list, accts] = await Promise.all([
-        api<{ tenantId: string; name: string; role: string }>("GET", "/studio/me"),
+        api<{ tenantId: string; name: string; role: string; publicApiUrl: string }>("GET", "/studio/me"),
         api<Automation[]>("GET", "/studio/automations"),
         api<Account[]>("GET", "/studio/accounts")
       ]);
@@ -108,7 +108,7 @@ export function App() {
       </aside>
       <main className="main"><div className="workspace-bar"><span>WORKSPACE / {route.page === "run" ? "RUN INSPECTOR" : route.page === "automation" ? "AUTOMATION" : "OVERVIEW"}</span><a href="https://pixie.so" target="_blank" rel="noreferrer">Pixie framework ↗</a></div>
         {route.page === "home" && <Home automations={automations} accounts={accounts} refresh={refresh} />}
-        {route.page === "automation" && <AutomationPage id={route.id} tab={route.tab} accounts={accounts} onChanged={refresh} />}
+        {route.page === "automation" && <AutomationPage id={route.id} tab={route.tab} accounts={accounts} publicApiUrl={me.publicApiUrl} onChanged={refresh} />}
         {route.page === "run" && <RunInspector runId={route.runId} />}
         {route.page === "connection" && <ConnectionHandoff id={route.id} />}
       </main>

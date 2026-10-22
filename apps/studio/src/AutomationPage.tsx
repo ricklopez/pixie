@@ -5,7 +5,7 @@ import { navigate, RunTable, StateBadge } from "./App";
 const TABS = ["record", "review", "test", "publish", "api"] as const;
 type Tab = (typeof TABS)[number];
 
-export function AutomationPage({ id, tab, accounts, onChanged }: { id: string; tab?: string; accounts: Account[]; onChanged: () => Promise<void> }) {
+export function AutomationPage({ id, tab, accounts, publicApiUrl, onChanged }: { id: string; tab?: string; accounts: Account[]; publicApiUrl: string; onChanged: () => Promise<void> }) {
   const [automation, setAutomation] = useState<Automation | null>(null);
   const [error, setError] = useState<string | null>(null);
   const current: Tab = (TABS as readonly string[]).includes(tab ?? "") ? (tab as Tab) : defaultTab(automation);
@@ -56,7 +56,7 @@ export function AutomationPage({ id, tab, accounts, onChanged }: { id: string; t
       {current === "review" && <ReviewTab automation={automation} changed={changed} />}
       {current === "test" && <TestTab automation={automation} accounts={accounts} changed={changed} />}
       {current === "publish" && <PublishTab automation={automation} changed={changed} />}
-      {current === "api" && <ApiTab automation={automation} accounts={accounts} />}
+      {current === "api" && <ApiTab automation={automation} accounts={accounts} publicApiUrl={publicApiUrl} />}
     </>
   );
 }
@@ -563,7 +563,7 @@ function PublishTab({ automation, changed }: { automation: Automation; changed: 
   const [error, setError] = useState<string | null>(null);
   const [exported, setExported] = useState<ReviewExport | null>(null);
   const [contract, setContract] = useState<{
-    repository: string; method: string; identityFields: string[];
+    repository: string; method: string; identityFields: string[]; identityLegacy: boolean;
     compatibility: { level: "major" | "minor" | "adapter"; changes: { path: string; kind: string }[] };
     current: { major: number; minor: number; adapterRevision: number } | null;
     next: { major: number; minor: number; adapterRevision: number };
@@ -579,7 +579,7 @@ function PublishTab({ automation, changed }: { automation: Automation; changed: 
         {contract ? <>
           <p><code>{contract.repository}.{contract.method}</code> · model <code>v{contract.next.major}.{contract.next.minor}</code> · operation <code>v{contract.next.major}.{contract.next.minor}</code> · adapter <code>rev {contract.next.adapterRevision}</code></p>
           <p className="muted">Current: {contract.current ? `model/operation v${contract.current.major}.${contract.current.minor}, adapter rev ${contract.current.adapterRevision}` : "unpublished"}</p>
-          <p className="muted">Identity fields: {contract.identityFields.join(", ") || "not declared"} · compatibility: <strong>{contract.compatibility.level}</strong></p>
+          <p className="muted">Identity fields: {contract.identityLegacy ? "not declared (legacy)" : contract.identityFields.join(", ") || "not declared"} · compatibility: <strong>{contract.compatibility.level}</strong></p>
           {contract.compatibility.changes.map((change, index) => <p className="muted" key={`${change.path}-${index}`}><code>{change.kind}</code> {change.path}</p>)}
           {contract.error && <p className="error">{contract.error}</p>}
         </> : <p className="muted">Loading contract preview…</p>}
@@ -696,7 +696,7 @@ function PublishTab({ automation, changed }: { automation: Automation; changed: 
 
 // -- API explorer ----------------------------------------------------------------------------------------
 
-function ApiTab({ automation, accounts }: { automation: Automation; accounts: Account[] }) {
+function ApiTab({ automation, accounts, publicApiUrl }: { automation: Automation; accounts: Account[]; publicApiUrl: string }) {
   const [spec, setSpec] = useState<unknown>(null);
   const [revision, setRevision] = useState(automation.revisions.at(-1)?.revision ?? 1);
   const [accountId, setAccountId] = useState(accounts[0]?.id ?? "");
@@ -711,10 +711,11 @@ function ApiTab({ automation, accounts }: { automation: Automation; accounts: Ac
 
   const body = { revision, accountId, input: coerceInput(automation, values) };
   const curl = `curl -X POST ${location.origin}/v1/automations/${automation.id}/runs \\\n  -H "Authorization: Bearer $GATEWAY_CLIENT_TOKEN" -H "Content-Type: application/json" -H "Idempotency-Key: $(uuidgen)" \\\n  -d '${JSON.stringify(body)}'`;
+  const mcpUrl = `${publicApiUrl.replace(/\/+$/, "")}/mcp`;
   const mcpConfig = JSON.stringify({
     mcpServers: {
       pixie: {
-        url: `${location.origin}/mcp`,
+        url: mcpUrl,
         headers: { Authorization: "Bearer ${GATEWAY_CLIENT_TOKEN}" }
       }
     }
@@ -789,7 +790,7 @@ function ApiTab({ automation, accounts }: { automation: Automation; accounts: Ac
       </div>
       <div className="panel">
         <h2>MCP</h2>
-        <p>Streamable HTTP endpoint: <code>{location.origin}/mcp</code></p>
+        <p>Streamable HTTP endpoint: <code>{mcpUrl}</code></p>
         <pre>{mcpConfig}</pre>
         <p className="muted"><code>invoke</code> starts a run and immediately returns its handle. Use <code>get_run</code> to read status, verification, and the accepted result. If a run reaches <code>awaiting_auth</code>, follow its Studio connections handoff URL, sign in, then invoke again.</p>
       </div>

@@ -4,19 +4,33 @@ import { createApiKey } from "../src/auth.js";
 import { call, PORTAL, publishEligibility, testApp, TOKENS } from "./helpers.js";
 
 test("lifecycle: draft -> configuring -> testing -> ready -> published, revisions immutable", async () => {
-  const { app, runs, shutdown } = await testApp();
+  const { app, db, runs, shutdown } = await testApp();
   const { id, revision } = await publishEligibility(app, runs);
   assert.equal(revision, 1);
   const view = await call(app, TOKENS.developer, "GET", `/studio/automations/${id}`);
   assert.equal(view.json.state, "published");
   const edit = await call(app, TOKENS.developer, "PUT", `/studio/automations/${id}/definition`, view.json.definition);
   assert.equal(edit.status, 409);
+  db.prepare(`UPDATE automations SET name = ? WHERE id = ?`).run("Eligibility (draft) (draft)", id);
   const draft = await call(app, TOKENS.developer, "POST", `/studio/automations/${id}/new-draft`);
   assert.equal(draft.status, 201);
   assert.equal(draft.json.state, "configuring");
+  assert.equal(draft.json.name, "Eligibility (draft)");
+  assert.equal((draft.json.definition as { name: string }).name, "Eligibility (draft)");
   const premature = await call(app, TOKENS.developer, "POST", `/studio/automations/${draft.json.id}/publish`);
   assert.equal(premature.status, 409);
   await shutdown();
+});
+
+test("Studio reports the configured public API URL", async () => {
+  const { app, shutdown } = await testApp();
+  try {
+    const me = await call(app, TOKENS.developer, "GET", "/studio/me");
+    assert.equal(me.status, 200);
+    assert.equal(me.json.publicApiUrl, "http://gateway.test");
+  } finally {
+    await shutdown();
+  }
 });
 
 test("scripted decisions stay separate from provider calls and spend", async () => {

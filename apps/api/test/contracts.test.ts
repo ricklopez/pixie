@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import SwaggerParser from "@apidevtools/swagger-parser";
-import { TOKENS, call, publishEligibility, testApp } from "./helpers.js";
+import { eligibilityOverviewDefinition } from "@gateway/definition";
+import { bootstrap } from "../src/app.js";
+import { backfillPublishedContracts, prepareContractPublication, previewContract } from "../src/contracts.js";
+import { openDatabase } from "../src/db.js";
+import { PORTAL, TOKENS, call, publishEligibility, testApp } from "./helpers.js";
 
 type MutableDefinition = {
   checkpoints: { objective: string }[];
@@ -123,6 +127,85 @@ test("repository contracts evolve immutably and keep prior majors callable", asy
       input: { memberId: "DEMO-1001" }
     }, { "Pixie-Contract-Version": "2" });
     assert.equal(blocked.status, 410);
+  } finally {
+    await built.app.close();
+  }
+});
+
+test("startup backfills legacy published revisions once with undeclared identity", () => {
+  const db = openDatabase(":memory:");
+  try {
+    db.prepare(`INSERT INTO tenants (id, name) VALUES ('tenant_demo', 'Legacy tenant')`).run();
+    const first = { ...eligibilityOverviewDefinition(PORTAL), id: "auto-legacy", name: "Legacy automation" };
+    delete first.keyFields;
+    const second = { ...first, engineRevision: `${first.engineRevision}-updated` };
+    const timestamp = "2025-01-01T00:00:00.000Z";
+    db.prepare(`INSERT INTO automations (id, tenant_id, name, state, definition, created_at, updated_at)
+      VALUES (?, 'tenant_demo', ?, 'published', ?, ?, ?)`)
+      .run(first.id, first.name, JSON.stringify(second), timestamp, timestamp);
+    const insertRevision = db.prepare(`INSERT INTO revisions
+      (automation_id, revision, checksum, definition, published_at, published_by, test_run_id)
+      VALUES (?, ?, ?, ?, ?, 'legacy', NULL)`);
+    insertRevision.run(first.id, 1, "checksum-1", JSON.stringify(first), timestamp);
+    insertRevision.run(first.id, 2, "checksum-2", JSON.stringify(second), "2025-01-02T00:00:00.000Z");
+
+    bootstrap(db, TOKENS, PORTAL);
+    const legacyPreview = previewContract(db, "tenant_demo", second);
+    assert.equal(legacyPreview.identityLegacy, true);
+    assert.equal(legacyPreview.publishable, false);
+    assert.throws(
+      () => prepareContractPublication(db, "tenant_demo", "legacy-repository", first.id, 3, second, "checksum-3"),
+      /keyFields/
+    );
+
+    const adapters = db.prepare(`SELECT revision, automation_revision AS automationRevision
+      FROM adapter_revisions WHERE automation_id = ? ORDER BY automation_revision`).all(first.id) as {
+      revision: number; automationRevision: number;
+    }[];
+    assert.deepEqual(adapters.map(({ revision, automationRevision }) => ({ revision, automationRevision })), [
+      { revision: 1, automationRevision: 1 },
+      { revision: 2, automationRevision: 2 }
+    ]);
+    const models = db.prepare(`SELECT identity_fields AS identityFields FROM model_versions`).all() as { identityFields: string }[];
+    assert.equal(models.length, 1);
+    assert.deepEqual(JSON.parse(models[0]!.identityFields), ["undeclared"]);
+    const operations = db.prepare(`SELECT major, minor FROM operation_versions`).all() as { major: number; minor: number }[];
+    assert.deepEqual(operations.map(({ major, minor }) => ({ major, minor })), [{ major: 1, minor: 0 }]);
+    const binding = db.prepare(`SELECT ar.revision FROM publication_bindings b
+      JOIN adapter_revisions ar ON ar.id = b.adapter_revision_id`).get() as { revision: number };
+    assert.equal(binding.revision, 2);
+
+    bootstrap(db, TOKENS, PORTAL);
+    assert.equal(backfillPublishedContracts(db), 0);
+    assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM adapter_revisions`).get() as { n: number }).n, 2);
+    assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM operation_versions`).get() as { n: number }).n, 1);
+  } finally {
+    db.close();
+  }
+});
+
+test("built-in Todo templates publish with their declared identity", async () => {
+  const built = await testApp();
+  try {
+    for (const template of ["create-todo", "list-todos", "update-todo", "delete-todo"] as const) {
+      const created = await call(built.app, TOKENS.developer, "POST", "/studio/automations", {
+        name: `Todo ${template}`,
+        startUrl: "https://todo.uiineed.com/",
+        template
+      });
+      assert.equal(created.status, 201, JSON.stringify(created.json));
+      const id = String(created.json.id);
+      const testRunId = `completed-${template}`;
+      const timestamp = new Date().toISOString();
+      built.db.prepare(`INSERT INTO runs
+        (id, tenant_id, automation_id, revision, account_id, caller_id, kind, state, input, created_at, started_at, finished_at)
+        VALUES (?, 'tenant_demo', ?, 0, 'acct_demo', 'offline-test', 'test', 'completed', '{}', ?, ?, ?)`)
+        .run(testRunId, id, timestamp, timestamp, timestamp);
+      built.db.prepare(`UPDATE automations SET state = 'ready', last_test_run_id = ? WHERE id = ?`).run(testRunId, id);
+      const published = await call(built.app, TOKENS.developer, "POST", `/studio/automations/${id}/publish`);
+      assert.equal(published.status, 201, `${template}: ${JSON.stringify(published.json)}`);
+      assert.equal(published.json.compatibility, "major");
+    }
   } finally {
     await built.app.close();
   }

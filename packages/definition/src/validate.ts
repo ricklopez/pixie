@@ -195,14 +195,19 @@ export function validateDefinition(input: unknown, options: { allowLoopback?: bo
   });
   if (d.keyFields !== undefined) {
     if (!Array.isArray(d.keyFields) || d.keyFields.some((field) => typeof field !== "string")) {
-      push("keyFields", "must be an array of output field names");
+      push("keyFields", "must be an array of output field names or list-item text paths");
     } else {
       const seen = new Set<string>();
       d.keyFields.forEach((field, i) => {
         const output = outputs.find((item) => isRecord(item) && item.name === field) as Partial<OutputField> | undefined;
+        const listItemPath = /^([A-Za-z_][A-Za-z0-9_]*)\.text$/.exec(field);
+        const listOutput = listItemPath
+          ? outputs.find((item) => isRecord(item) && item.name === listItemPath[1]) as Partial<OutputField> | undefined
+          : undefined;
+        const validListItemKey = listOutput?.type === "list" && listOutput.required === true && listOutput.extractor?.kind === "listItems";
         if (seen.has(field)) push(`keyFields[${i}]`, "duplicate key field");
-        else if (!output) push(`keyFields[${i}]`, "must name an output field");
-        else if (output.required !== true) push(`keyFields[${i}]`, "key fields must be required outputs");
+        else if (!output && !validListItemKey) push(`keyFields[${i}]`, "must name a required output field or list item's text");
+        else if (output && output.required !== true) push(`keyFields[${i}]`, "key fields must be required outputs");
         seen.add(field);
       });
     }

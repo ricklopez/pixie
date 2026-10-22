@@ -68,6 +68,7 @@ export interface ContractPreview {
   repository: string;
   method: string;
   identityFields: string[];
+  identityLegacy: boolean;
   compatibility: CompatibilityResult;
   current: { major: number; minor: number; adapterRevision: number } | null;
   next: { major: number; minor: number; adapterRevision: number };
@@ -110,9 +111,14 @@ export function previewContract(db: DatabaseSync, tenantId: string, definition: 
   const publishable = identityFields.length > 0;
   const next = versionNumbers(previous, result.level);
   if (result.level === "adapter" && previous) next.adapterRevision = previous.adapter_revision + 1;
+  const currentIdentity = previous
+    ? db.prepare(`SELECT identity_fields FROM model_versions WHERE id = ?`).get(previous.model_version_id) as { identity_fields: string } | undefined
+    : undefined;
+  const identityLegacy = currentIdentity ? (JSON.parse(currentIdentity.identity_fields) as string[]).includes("undeclared") : false;
   return {
     ...target,
     identityFields,
+    identityLegacy,
     compatibility: result,
     current: previous ? { major: previous.major, minor: previous.minor, adapterRevision: previous.adapter_revision } : null,
     next,
@@ -128,10 +134,11 @@ export function prepareContractPublication(
   automationId: string,
   automationRevision: number,
   definition: AutomationDefinition,
-  definitionHash: string
+  definitionHash: string,
+  allowUndeclaredIdentity = false
 ): ContractPublicationPlan {
   const preview = previewContract(db, tenantId, definition);
-  if (!preview.publishable) throw new Error(preview.error);
+  if (!preview.publishable && !allowUndeclaredIdentity) throw new Error(preview.error);
   const previous = previousOperation(db, tenantId, preview.repository, preview.method);
   const version = preview.next;
   const newContract = preview.compatibility.level !== "adapter" || !previous;
@@ -139,7 +146,7 @@ export function prepareContractPublication(
   const operationVersionId = newContract ? randomUUID() : previous.id;
   const modelName = `${preview.repository}.${preview.method}.output`;
   const schema = outputJsonSchema(definition);
-  const identityFields = definition.keyFields ?? [];
+  const identityFields = definition.keyFields ?? (allowUndeclaredIdentity ? ["undeclared"] : []);
 
   const modelContent = {
     id: modelId,
@@ -242,6 +249,59 @@ export function persistContractPublication(db: DatabaseSync, plan: ContractPubli
     ON CONFLICT(repository_id, method, major) DO UPDATE SET
       operation_version_id = excluded.operation_version_id, adapter_revision_id = excluded.adapter_revision_id`)
     .run(plan.repositoryId, plan.method, plan.major, plan.operation?.id ?? plan.adapter.operation_version_id, plan.adapter.id);
+}
+
+export function backfillPublishedContracts(db: DatabaseSync): number {
+  const missing = db.prepare(`SELECT a.tenant_id AS tenantId, a.id AS automationId, r.revision AS automationRevision,
+      r.definition, r.checksum
+    FROM revisions r
+    JOIN automations a ON a.id = r.automation_id
+    WHERE NOT EXISTS (
+      SELECT 1 FROM adapter_revisions ar
+      WHERE ar.automation_id = r.automation_id AND ar.automation_revision = r.revision
+    )
+    ORDER BY r.published_at, r.automation_id, r.revision`).all() as {
+    tenantId: string;
+    automationId: string;
+    automationRevision: number;
+    definition: string;
+    checksum: string;
+  }[];
+  let created = 0;
+
+  for (const revision of missing) {
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      if (db.prepare(`SELECT 1 FROM adapter_revisions WHERE automation_id = ? AND automation_revision = ?`)
+        .get(revision.automationId, revision.automationRevision)) {
+        db.exec("COMMIT");
+        continue;
+      }
+      const definition = JSON.parse(revision.definition) as AutomationDefinition;
+      const target = contractTarget(definition);
+      db.prepare(`INSERT OR IGNORE INTO repositories (id, tenant_id, name) VALUES (?, ?, ?)`)
+        .run(randomUUID(), revision.tenantId, target.repository);
+      const repository = db.prepare(`SELECT id FROM repositories WHERE tenant_id = ? AND name = ?`)
+        .get(revision.tenantId, target.repository) as { id: string };
+      const plan = prepareContractPublication(
+        db,
+        revision.tenantId,
+        repository.id,
+        revision.automationId,
+        revision.automationRevision,
+        definition,
+        revision.checksum,
+        true
+      );
+      persistContractPublication(db, plan);
+      db.exec("COMMIT");
+      created += 1;
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+  return created;
 }
 
 export function listModels(db: DatabaseSync, tenantId: string) {
