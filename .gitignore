@@ -1,6 +1,29 @@
 .DS_Store
-node_modules/
+# Credentials and local settings
 .env
 .env.*
 !.env.example
+*.pem
+*.key
+# Dependencies and build output
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+dist/
+build/
+coverage/
+.pytest_cache/
+.ruff_cache/
+# Browser state, recordings, evidence and databases (never source assets)
+artifacts/
+recordings/
+evidence/
+browser-data/
+profiles/
+playwright-report/
+test-results/
+*.sqlite
+*.sqlite3
+*.db
 *.log

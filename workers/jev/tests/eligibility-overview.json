@@ -1,0 +1,305 @@
+{
+  "allowedOrigins": [
+    "http://127.0.0.1:4174"
+  ],
+  "assertions": [
+    {
+      "input": "memberId",
+      "kind": "equalsInput",
+      "output": "memberId"
+    },
+    {
+      "kind": "required",
+      "output": "eligibilityStatus"
+    },
+    {
+      "kind": "oneOf",
+      "output": "eligibilityStatus",
+      "values": [
+        "Active",
+        "Inactive",
+        "Terminated"
+      ]
+    },
+    {
+      "earlier": "effectiveFrom",
+      "kind": "dateNotAfter",
+      "later": "effectiveTo"
+    }
+  ],
+  "authRequiredSignals": [
+    {
+      "kind": "urlMatches",
+      "pattern": "/demo-portal/login"
+    },
+    {
+      "kind": "textPresent",
+      "text": "session has expired"
+    },
+    {
+      "kind": "fieldVisible",
+      "label": "Password"
+    }
+  ],
+  "checkpoints": [
+    {
+      "allowedEffects": [
+        "type",
+        "click"
+      ],
+      "id": "search-form",
+      "maxActions": 6,
+      "objective": "On the member search page, enter the member ID {{memberId}} into the Member ID field and click Search.",
+      "postcondition": [
+        {
+          "kind": "urlMatches",
+          "pattern": "/demo-portal/members\\?"
+        },
+        {
+          "kind": "labelPresent",
+          "label": "Eligibility status"
+        }
+      ],
+      "precondition": [
+        {
+          "kind": "fieldVisible",
+          "label": "Member ID"
+        }
+      ]
+    },
+    {
+      "allowedEffects": [
+        "click"
+      ],
+      "id": "member-result",
+      "maxActions": 4,
+      "objective": "Open the benefits overview for the displayed member by clicking 'View benefits overview'.",
+      "postcondition": [
+        {
+          "kind": "urlMatches",
+          "pattern": "/benefits$"
+        },
+        {
+          "kind": "textPresent",
+          "text": "Benefits overview"
+        }
+      ],
+      "precondition": [
+        {
+          "kind": "labelPresent",
+          "label": "Member ID"
+        }
+      ]
+    },
+    {
+      "allowedEffects": [],
+      "id": "benefits-overview",
+      "maxActions": 1,
+      "objective": "The benefits overview with the benefits table is visible. Nothing else to do.",
+      "postcondition": [
+        {
+          "kind": "textPresent",
+          "text": "Benefits"
+        }
+      ],
+      "precondition": [
+        {
+          "kind": "textPresent",
+          "text": "Benefits overview"
+        }
+      ]
+    }
+  ],
+  "effect": "read",
+  "engine": "jev-ultrafast",
+  "engineRevision": "1231850a0bf1a0c0341fe408ef1668dbbfdfac46",
+  "id": "eligibility-overview",
+  "inputs": [
+    {
+      "binding": {
+        "checkpointId": "search-form",
+        "targetLabel": "Member ID"
+      },
+      "description": "Synthetic member identifier, e.g. DEMO-1001",
+      "name": "memberId",
+      "required": true,
+      "source": {
+        "kind": "caller"
+      },
+      "type": "string"
+    }
+  ],
+  "limits": {
+    "deadlineMs": 120000,
+    "maxActions": 60
+  },
+  "name": "Eligibility overview",
+  "outputs": [
+    {
+      "extractor": {
+        "checkpointId": "benefits-overview",
+        "kind": "labelValue",
+        "label": "Member ID"
+      },
+      "name": "memberId",
+      "required": true,
+      "type": "string"
+    },
+    {
+      "extractor": {
+        "checkpointId": "benefits-overview",
+        "kind": "labelValue",
+        "label": "Eligibility status"
+      },
+      "name": "eligibilityStatus",
+      "required": true,
+      "type": "string"
+    },
+    {
+      "extractor": {
+        "checkpointId": "benefits-overview",
+        "kind": "labelValue",
+        "label": "Plan"
+      },
+      "name": "plan",
+      "required": true,
+      "type": "string"
+    },
+    {
+      "extractor": {
+        "checkpointId": "benefits-overview",
+        "kind": "labelValue",
+        "label": "Effective from"
+      },
+      "name": "effectiveFrom",
+      "required": true,
+      "type": "date"
+    },
+    {
+      "extractor": {
+        "checkpointId": "benefits-overview",
+        "kind": "labelValue",
+        "label": "Effective to"
+      },
+      "name": "effectiveTo",
+      "required": true,
+      "type": "date"
+    },
+    {
+      "extractor": {
+        "checkpointId": "benefits-overview",
+        "kind": "labelValue",
+        "label": "Source date"
+      },
+      "name": "portalAsOf",
+      "required": true,
+      "type": "date"
+    },
+    {
+      "extractor": {
+        "checkpointId": "benefits-overview",
+        "column": "Amount",
+        "kind": "tableCell",
+        "rowLabel": "Annual maximum",
+        "table": "Benefits",
+        "where": {
+          "column": "Network",
+          "equals": "In network"
+        }
+      },
+      "name": "annualMaximum",
+      "required": true,
+      "type": "number"
+    },
+    {
+      "extractor": {
+        "checkpointId": "benefits-overview",
+        "column": "Remaining",
+        "kind": "tableCell",
+        "rowLabel": "Annual maximum",
+        "table": "Benefits",
+        "where": {
+          "column": "Network",
+          "equals": "In network"
+        }
+      },
+      "name": "annualMaximumRemaining",
+      "required": true,
+      "type": "number"
+    },
+    {
+      "extractor": {
+        "checkpointId": "benefits-overview",
+        "column": "Period",
+        "kind": "tableCell",
+        "rowLabel": "Annual maximum",
+        "table": "Benefits",
+        "where": {
+          "column": "Network",
+          "equals": "In network"
+        }
+      },
+      "name": "annualMaximumPeriod",
+      "required": true,
+      "type": "string"
+    },
+    {
+      "extractor": {
+        "checkpointId": "benefits-overview",
+        "column": "Amount",
+        "kind": "tableCell",
+        "rowLabel": "Deductible",
+        "table": "Benefits",
+        "where": {
+          "column": "Network",
+          "equals": "In network"
+        }
+      },
+      "name": "deductible",
+      "required": true,
+      "type": "number"
+    },
+    {
+      "extractor": {
+        "checkpointId": "benefits-overview",
+        "column": "Remaining",
+        "kind": "tableCell",
+        "rowLabel": "Deductible",
+        "table": "Benefits",
+        "where": {
+          "column": "Network",
+          "equals": "In network"
+        }
+      },
+      "name": "deductibleRemaining",
+      "required": true,
+      "type": "number"
+    },
+    {
+      "extractor": {
+        "checkpointId": "benefits-overview",
+        "column": "Network",
+        "kind": "tableCell",
+        "rowLabel": "Deductible",
+        "table": "Benefits",
+        "where": {
+          "column": "Network",
+          "equals": "In network"
+        }
+      },
+      "name": "deductibleNetwork",
+      "required": true,
+      "type": "string"
+    },
+    {
+      "extractor": {
+        "kind": "observedAt"
+      },
+      "name": "observedAt",
+      "required": true,
+      "type": "date"
+    }
+  ],
+  "schemaVersion": "gateway.automation/v1",
+  "startUrl": "http://127.0.0.1:4174/demo-portal"
+}

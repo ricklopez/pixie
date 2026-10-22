@@ -1,0 +1,33 @@
+{
+  "name": "pixie",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Show it once. Call it as an API.",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -k -n portal,api,studio -c blue,green,magenta \"npm run dev -w apps/portal\" \"npm run dev -w apps/api\" \"npm run dev -w apps/studio\"",
+    "build": "npm run build -w packages/definition && npm run build -w packages/recorder && npm run build -w apps/portal && npm run build -w apps/api && npm run build -w apps/cli && npm run build -w apps/studio",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "eslint .",
+    "test": "npm run test --workspaces --if-present",
+    "test:browser": "GATEWAY_BROWSER_TESTS=1 npm run test -w packages/recorder -w apps/api",
+    "worker:sync": "cd workers/jev && uv sync --frozen",
+    "worker:test": "cd workers/jev && uv run pytest -q",
+    "worker:lint": "cd workers/jev && uv run ruff check .",
+    "check:repo": "python3 scripts/check_repository.py"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.0",
+    "@types/node": "^24.10.0",
+    "concurrently": "^9.2.1",
+    "eslint": "^9.39.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.0"
+  }
+}
