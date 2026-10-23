@@ -197,13 +197,21 @@ test("built-in Todo templates publish with their declared identity", async () =>
       const id = String(created.json.id);
       const testRunId = `completed-${template}`;
       const timestamp = new Date().toISOString();
+      const input = template === "create-todo"
+        ? { title: "pixie-demo smoke task" }
+        : template === "update-todo"
+          ? { title: "pixie-demo old task", newTitle: "pixie-demo updated task" }
+          : template === "delete-todo"
+            ? { title: "pixie-demo deleted task" }
+            : {};
       built.db.prepare(`INSERT INTO runs
         (id, tenant_id, automation_id, revision, account_id, caller_id, kind, state, input, created_at, started_at, finished_at)
-        VALUES (?, 'tenant_demo', ?, 0, 'acct_demo', 'offline-test', 'test', 'completed', '{}', ?, ?, ?)`)
-        .run(testRunId, id, timestamp, timestamp, timestamp);
+        VALUES (?, 'tenant_demo', ?, 0, 'acct_demo', 'offline-test', 'test', 'completed', ?, ?, ?, ?)`)
+        .run(testRunId, id, JSON.stringify(input), timestamp, timestamp, timestamp);
       built.db.prepare(`UPDATE automations SET state = 'ready', last_test_run_id = ? WHERE id = ?`).run(testRunId, id);
       const published = await call(built.app, TOKENS.developer, "POST", `/studio/automations/${id}/publish`);
-      assert.equal(published.status, 201, `${template}: ${JSON.stringify(published.json)}`);
+      const smoke = published.json.smokeRunId ? built.runs.get(String(published.json.smokeRunId)) : undefined;
+      assert.equal(published.status, 201, `${template}: ${JSON.stringify({ response: published.json, smoke, events: smoke ? built.runs.events(smoke.id) : [] })}`);
       assert.equal(published.json.compatibility, "major");
     }
   } finally {

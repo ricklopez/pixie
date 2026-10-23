@@ -22,6 +22,18 @@ import { openApiDocument } from "./openapi.js";
 import { buildReviewExport } from "./export.js";
 import { ACCOUNT_ID_PATTERN, isValidAccountId } from "./browsers.js";
 import type { RunManager } from "./runs.js";
+import { generateAdapter, type RecordingInput } from "@gateway/adapter";
+import {
+  adapterSourceContainsSecret,
+  executeRepairGates,
+  estimateRepairInputTokens,
+  FIREWORKS_MAX_CALLS,
+  FIREWORKS_MAX_INPUT_TOKENS,
+  FIREWORKS_REPAIR_PRICE_USD_PER_MILLION,
+  requestModelRepair,
+  sanitizeRepairText,
+  sourceWithinAdapterScope
+} from "./repair.js";
 import { runEvidence, runView } from "./views.js";
 import type { BrowserSessionLease, BrowserbaseProvider } from "./browser-provider.js";
 import {
@@ -34,6 +46,13 @@ import {
   previewContract,
   retireOperation
 } from "./contracts.js";
+import {
+  activatePublication,
+  failPublicationActivation,
+  recordActivationSmoke,
+  stagePublicationActivation,
+  storePublicationArtifact
+} from "./publication.js";
 
 export interface StudioContext {
   runs: RunManager;
@@ -42,6 +61,8 @@ export interface StudioContext {
   allowLoopback: boolean;
   publicBaseUrl: string;
   browserbaseProvider?: BrowserbaseProvider;
+  fireworksApiKey?: string;
+  fireworksEndpoint?: string;
 }
 
 const STATES: AutomationState[] = ["draft", "recording", "configuring", "testing", "ready", "published"];
@@ -388,7 +409,7 @@ export function registerStudioRoutes(app: FastifyInstance, ctx: StudioContext) {
     });
 
     // -- test run ----------------------------------------------------------------------------------------
-    studio.post<{ Params: { id: string }; Body: { accountId: string; input: unknown } }>("/studio/automations/:id/test", async (req, reply) => {
+    studio.post<{ Params: { id: string }; Body: { accountId: string; input: unknown; engine?: "script" | "live" | "scripted" } }>("/studio/automations/:id/test", async (req, reply) => {
       const row = automation(req.params.id, req.principal.tenantId);
       if (!row) return reply.code(404).send({ error: "not found" });
       if (!["configuring", "testing", "ready"].includes(row.state)) return reply.code(409).send({ error: `cannot test in state ${row.state}` });
@@ -397,6 +418,15 @@ export function registerStudioRoutes(app: FastifyInstance, ctx: StudioContext) {
       const definition = JSON.parse(row.definition) as AutomationDefinition;
       const check = validateDefinition(definition, { allowLoopback: ctx.allowLoopback });
       if (!check.ok) return reply.code(400).send({ error: "definition is not complete", issues: check.issues });
+      let adapterSource: string | null = null;
+      if (req.body.engine === "script") {
+        if (!row.recording_id) return reply.code(409).send({ error: "script testing requires a recording" });
+        const recording = db.prepare(`SELECT events FROM recordings WHERE id = ?`).get(row.recording_id) as { events: string } | undefined;
+        if (!recording) return reply.code(409).send({ error: "recording not found" });
+        const generated = generateAdapter({ events: JSON.parse(recording.events) }, definition);
+        if (generated.unsupported.length) return reply.code(422).send({ error: "recording contains unsupported steps", unsupported: generated.unsupported });
+        adapterSource = generated.source;
+      }
       const created = await ctx.runs.create({
         tenantId: req.principal.tenantId,
         automationId: row.id,
@@ -405,7 +435,9 @@ export function registerStudioRoutes(app: FastifyInstance, ctx: StudioContext) {
         accountId: req.body.accountId,
         callerId: req.principal.keyId,
         kind: "test",
-        input: req.body.input
+        input: req.body.input,
+        ...(req.body.engine ? { engine: req.body.engine } : {}),
+        ...(adapterSource ? { adapterSource } : {})
       });
       if (!created.ok) return reply.code(created.status).send({ error: created.error, details: created.details });
       setState(row.id, "testing", { last_test_run_id: created.run.id });
@@ -415,6 +447,26 @@ export function registerStudioRoutes(app: FastifyInstance, ctx: StudioContext) {
         setState(row.id, run.state === "completed" ? "ready" : "configuring");
       }).catch(() => setState(row.id, "configuring"));
       return reply.code(202).send(runView(created.run));
+    });
+
+    studio.get<{ Params: { id: string } }>("/studio/automations/:id/generated", async (req, reply) => {
+      const row = automation(req.params.id, req.principal.tenantId);
+      if (!row) return reply.code(404).send({ error: "not found" });
+      if (!row.recording_id) return reply.code(404).send({ error: "no recording yet" });
+      const recording = db.prepare(`SELECT events FROM recordings WHERE id = ?`).get(row.recording_id) as { events: string } | undefined;
+      if (!recording) return reply.code(404).send({ error: "recording not found" });
+      const generated = generateAdapter({ events: JSON.parse(recording.events) }, JSON.parse(row.definition) as AutomationDefinition);
+      return generated;
+    });
+    studio.post<{ Params: { id: string }; Body: { recording: { events: unknown[]; warnings?: unknown[]; actionCount?: number } } }>("/studio/automations/:id/generated", async (req, reply) => {
+      const row = automation(req.params.id, req.principal.tenantId);
+      if (!row) return reply.code(404).send({ error: "not found" });
+      const generated = generateAdapter(req.body.recording as RecordingInput, JSON.parse(row.definition) as AutomationDefinition);
+      const id = randomUUID();
+      db.prepare(`INSERT INTO recordings (id, automation_id, started_at, stopped_at, events, warnings, action_count) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+        .run(id, row.id, now(), now(), JSON.stringify(req.body.recording.events), JSON.stringify(req.body.recording.warnings ?? []), req.body.recording.actionCount ?? req.body.recording.events.length);
+      setState(row.id, "configuring", { recording_id: id, last_test_run_id: null });
+      return generated;
     });
 
     // -- contracts and publish --------------------------------------------------------------------------
@@ -441,31 +493,139 @@ export function registerStudioRoutes(app: FastifyInstance, ctx: StudioContext) {
     studio.post<{ Params: { id: string } }>("/studio/automations/:id/publish", async (req, reply) => {
       const row = automation(req.params.id, req.principal.tenantId);
       if (!row) return reply.code(404).send({ error: "not found" });
+      if (row.state === "published") {
+        db.prepare(`UPDATE publication_activations SET artifact_reused = 1
+          WHERE id = (SELECT pa.id FROM publication_activations pa
+            JOIN adapter_revisions ar ON ar.id = pa.adapter_revision_id
+            WHERE ar.automation_id = ? AND pa.state = 'active'
+              AND ar.automation_revision = (SELECT MAX(revision) FROM revisions WHERE automation_id = ?)
+            ORDER BY pa.created_at DESC LIMIT 1)`)
+          .run(row.id, row.id);
+        const existing = db.prepare(`SELECT r.revision, r.checksum, ar.id AS adapterRevisionId,
+            ar.revision AS adapterRevision, ov.id AS operationVersionId, ov.major, ov.minor,
+            ov.model_version_id AS modelVersionId, repo.name AS repository, ov.method,
+            pa.id AS activationId, pa.state AS activationState, pa.smoke_run_id AS smokeRunId,
+            pa.artifact_hash AS artifactHash, artifact.size AS artifactSize
+          FROM revisions r
+          JOIN adapter_revisions ar ON ar.automation_id = r.automation_id AND ar.automation_revision = r.revision
+          JOIN operation_versions ov ON ov.id = ar.operation_version_id
+          JOIN repositories repo ON repo.id = ov.repository_id
+          JOIN publication_activations pa ON pa.adapter_revision_id = ar.id AND pa.state = 'active'
+          JOIN publication_artifacts artifact ON artifact.hash = pa.artifact_hash
+          WHERE r.automation_id = ? AND r.revision = (SELECT MAX(revision) FROM revisions WHERE automation_id = ?)
+          ORDER BY pa.created_at DESC LIMIT 1`).get(row.id, row.id) as {
+          revision: number; checksum: string; adapterRevisionId: string; adapterRevision: number;
+          operationVersionId: string; major: number; minor: number; modelVersionId: string;
+          repository: string; method: string; activationId: string; activationState: string;
+          smokeRunId: string | null; artifactHash: string; artifactSize: number;
+        } | undefined;
+        if (!existing) return reply.code(409).send({ error: "latest published revision has no successful activation" });
+        return reply.code(201).send({
+          automationId: row.id,
+          revision: existing.revision,
+          checksum: existing.checksum,
+          openapiUrl: `${ctx.publicBaseUrl}/v1/automations/${row.id}/openapi.json`,
+          compatibility: "adapter",
+          repository: existing.repository,
+          method: existing.method,
+          modelVersion: { id: existing.modelVersionId, major: existing.major, minor: existing.minor },
+          operationVersion: { id: existing.operationVersionId, major: existing.major, minor: existing.minor },
+          adapterRevision: { id: existing.adapterRevisionId, revision: existing.adapterRevision },
+          artifact: { hash: existing.artifactHash, size: existing.artifactSize, reused: true },
+          activation: { id: existing.activationId, state: existing.activationState, smokeRunId: existing.smokeRunId }
+        });
+      }
       if (row.state !== "ready") return reply.code(409).send({ error: `only automations in state 'ready' can be published (current: ${row.state}); run a passing test first` });
       const test = row.last_test_run_id ? ctx.runs.get(row.last_test_run_id) : undefined;
       if (!test || test.state !== "completed") return reply.code(409).send({ error: "the latest test run did not complete with an accepted result" });
       const definition = JSON.parse(row.definition) as AutomationDefinition;
+      let adapterSource: string | null = null;
+      if (definition.adapterGenerator === "recorded" && row.recording_id) {
+        const recording = db.prepare(`SELECT events FROM recordings WHERE id = ?`).get(row.recording_id) as { events: string } | undefined;
+        if (recording) {
+          const generated = generateAdapter({ events: JSON.parse(recording.events) }, definition);
+          if (generated.unsupported.length) return reply.code(422).send({ error: "recording contains unsupported steps", unsupported: generated.unsupported });
+          const metrics = test.metrics ? JSON.parse(test.metrics) as { engine?: string; adapterHash?: string } : {};
+          if (!metrics.engine?.startsWith("script") || metrics.adapterHash !== generated.hash) return reply.code(409).send({ error: "script publication requires a passing test of the exact adapter hash" });
+          adapterSource = generated.source;
+        }
+      }
       const checksum = await definitionChecksum(definition);
       const next = (db.prepare(`SELECT COALESCE(MAX(revision), 0) + 1 AS n FROM revisions WHERE automation_id = ?`).get(row.id) as { n: number }).n;
       let contract;
+      let artifact: ReturnType<typeof storePublicationArtifact>;
+      let activationId = "";
       try {
         db.exec("BEGIN IMMEDIATE");
         const target = contractTarget(definition);
         db.prepare(`INSERT OR IGNORE INTO repositories (id, tenant_id, name) VALUES (?, ?, ?)`).run(randomUUID(), req.principal.tenantId, target.repository);
         const repository = db.prepare(`SELECT id FROM repositories WHERE tenant_id = ? AND name = ?`).get(req.principal.tenantId, target.repository) as { id: string };
-        contract = prepareContractPublication(db, req.principal.tenantId, repository.id, row.id, next, definition, checksum);
+        contract = prepareContractPublication(db, req.principal.tenantId, repository.id, row.id, next, definition, checksum, false, adapterSource);
         db.prepare(`INSERT INTO revisions (automation_id, revision, checksum, definition, published_at, published_by, test_run_id) VALUES (?, ?, ?, ?, ?, ?, ?)`).run(
           row.id, next, checksum, JSON.stringify(definition), now(), req.principal.name, test.id
         );
-        persistContractPublication(db, contract);
+        persistContractPublication(db, contract, { activateBinding: false });
+        const operation = db.prepare(`SELECT model_version_id FROM operation_versions WHERE id = ?`)
+          .get(contract.operationVersionId) as { model_version_id: string };
+        artifact = storePublicationArtifact(db, {
+          tenantId: req.principal.tenantId,
+          adapterRevisionId: contract.adapter.id,
+          source: adapterSource,
+          definition,
+          operationVersionId: contract.operationVersionId,
+          modelVersionId: operation.model_version_id
+        });
+        activationId = stagePublicationActivation(db, {
+          tenantId: req.principal.tenantId,
+          repositoryId: contract.repositoryId,
+          method: contract.method,
+          major: contract.major,
+          operationVersionId: contract.operationVersionId,
+          adapterRevisionId: contract.adapter.id,
+          artifactHash: artifact.hash,
+          artifactReused: artifact.reused
+        });
         setState(row.id, "published");
         db.exec("COMMIT");
       } catch (error) {
         db.exec("ROLLBACK");
-        return reply.code(error instanceof Error && /keyFields/.test(error.message) ? 422 : 500).send({ error: error instanceof Error ? error.message : "contract publication failed" });
+        const status = error instanceof Error && /keyFields|dependency|exceeds/.test(error.message) ? 422 : 500;
+        return reply.code(status).send({ error: error instanceof Error ? error.message : "contract publication failed" });
       }
       const operation = db.prepare(`SELECT major, minor, model_version_id FROM operation_versions WHERE id = ?`)
         .get(contract.operationVersionId) as { major: number; minor: number; model_version_id: string };
+      const testMetrics = test.metrics ? JSON.parse(test.metrics) as { engine?: string } : {};
+      const smoke = await ctx.runs.create({
+        tenantId: req.principal.tenantId,
+        automationId: row.id,
+        revision: next,
+        definition,
+        accountId: test.account_id,
+        callerId: test.caller_id,
+        kind: "test",
+        input: JSON.parse(test.input),
+        operationVersionId: contract.operationVersionId,
+        adapterRevisionId: contract.adapter.id,
+        engine: adapterSource ? "script" : testMetrics.engine?.includes("live") ? "live" : "scripted",
+        ...(adapterSource ? { adapterSource } : {})
+      });
+      if (!smoke.ok) {
+        failPublicationActivation(db, activationId, smoke.error);
+        return reply.code(409).send({ error: "publication smoke test could not start", activationId, artifactHash: artifact.hash, activationState: "failed" });
+      }
+      recordActivationSmoke(db, activationId, smoke.run.id);
+      const smokeResult = await ctx.runs.waitForTerminal(smoke.run.id);
+      const activated = smokeResult.state === "completed" && activatePublication(db, activationId);
+      if (!activated) {
+        failPublicationActivation(db, activationId, "publication smoke test failed");
+        return reply.code(409).send({
+          error: "publication smoke test failed; the prior binding remains active",
+          activationId,
+          artifactHash: artifact.hash,
+          activationState: "failed",
+          smokeRunId: smoke.run.id
+        });
+      }
       return reply.code(201).send({
         automationId: row.id,
         revision: next,
@@ -477,8 +637,168 @@ export function registerStudioRoutes(app: FastifyInstance, ctx: StudioContext) {
         method: contract.method,
         modelVersion: { id: operation.model_version_id, major: operation.major, minor: operation.minor },
         operationVersion: { id: contract.operationVersionId, major: operation.major, minor: operation.minor },
-        adapterRevision: { id: contract.adapter.id, revision: contract.adapter.revision }
+        adapterRevision: { id: contract.adapter.id, revision: contract.adapter.revision },
+        artifact: { hash: artifact.hash, size: artifact.size, reused: artifact.reused },
+        activation: { id: activationId, state: "active", smokeRunId: smoke.run.id }
       });
+    });
+    studio.get<{ Params: { id: string } }>("/studio/automations/:id/publications", async (req, reply) => {
+      const row = automation(req.params.id, req.principal.tenantId);
+      if (!row) return reply.code(404).send({ error: "not found" });
+      const activations = db.prepare(`SELECT pa.id, pa.state, pa.artifact_hash AS artifactHash,
+          pa.smoke_run_id AS smokeRunId, pa.failure, pa.created_at AS createdAt, pa.updated_at AS updatedAt,
+          pa.created_at AS stagedAt, pa.smoked_at AS smokedAt, pa.activated_at AS activatedAt,
+          pa.method, pa.major, pa.adapter_revision_id AS adapterRevisionId,
+          ar.revision AS adapterRevision, a.size AS artifactSize,
+          pa.artifact_reused AS reused
+        FROM publication_activations pa
+        JOIN adapter_revisions ar ON ar.id = pa.adapter_revision_id
+        JOIN publication_artifacts a ON a.hash = pa.artifact_hash
+        WHERE pa.tenant_id = ? AND ar.automation_id = ?
+        ORDER BY pa.created_at DESC`).all(req.principal.tenantId, row.id);
+      return { activations, runtimeServiceId: process.env.PIXIE_RENDER_SERVICE_ID ?? null };
+    });
+    studio.get<{ Params: { id: string } }>("/studio/activations/:id", async (req, reply) => {
+      const activation = db.prepare(`SELECT pa.id, pa.state, pa.failure, pa.smoke_run_id AS smokeRunId,
+          pa.artifact_hash AS artifactHash, pa.created_at AS stagedAt, pa.smoked_at AS smokedAt,
+          pa.activated_at AS activatedAt, pa.updated_at AS updatedAt, a.size AS artifactSize,
+          pa.artifact_reused AS reused,
+          pa.method, pa.major
+        FROM publication_activations pa
+        JOIN publication_artifacts a ON a.hash = pa.artifact_hash
+        WHERE pa.id = ? AND pa.tenant_id = ?`)
+        .get(req.params.id, req.principal.tenantId) as Record<string, unknown> | undefined;
+      if (!activation) return reply.code(404).send({ error: "not found" });
+      return activation;
+    });
+    studio.post<{ Params: { id: string }; Body: { runId: string; source?: string; model?: boolean } }>("/studio/automations/:id/repairs", async (req, reply) => {
+      const row = automation(req.params.id, req.principal.tenantId);
+      const run = req.body?.runId ? ctx.runs.get(req.body.runId) : undefined;
+      if (!row || !run || run.tenant_id !== req.principal.tenantId || run.automation_id !== row.id) return reply.code(404).send({ error: "not found" });
+      if (!["failed", "needs_review"].includes(run.state)) return reply.code(409).send({ error: "repair requires a failed run" });
+      let source = req.body.source;
+      let generator: "manual" | "model" = "manual";
+      let modelSpend = { inputTokens: 0, outputTokens: 0, estimatedCostUsd: 0 };
+      if (req.body.model) {
+        if (source || !ctx.fireworksApiKey) return reply.code(400).send({ error: "model repair requires FIREWORKS_API_KEY and no manual source" });
+        const active = run.adapter_revision_id
+          ? db.prepare(`SELECT current.source FROM adapter_revisions failed
+            JOIN publication_bindings pb ON pb.operation_version_id = failed.operation_version_id
+            JOIN adapter_revisions current ON current.id = pb.adapter_revision_id
+            WHERE failed.id = ?`).get(run.adapter_revision_id) as { source: string | null } | undefined
+          : db.prepare(`SELECT ar.source FROM adapter_revisions ar
+            JOIN publication_bindings pb ON pb.adapter_revision_id = ar.id
+            WHERE ar.automation_id = ? ORDER BY ar.revision DESC LIMIT 1`).get(row.id) as { source: string | null } | undefined;
+        const failureEvents = db.prepare(`SELECT event FROM run_events WHERE run_id = ? ORDER BY seq`).all(run.id) as { event: string }[];
+        const inputValues = Object.values(JSON.parse(run.input) as Record<string, unknown>).filter((value): value is string => typeof value === "string");
+        if (inputValues.some((value) => value.length >= 3 && active?.source?.includes(value))) {
+          return reply.code(409).send({ error: "active adapter source contains caller input and cannot be sent to the repair model" });
+        }
+        const safeEvents = failureEvents.map(({ event }) => JSON.parse(event) as Record<string, unknown>)
+          .filter((event) => ["policy_rejected", "script_failure", "action"].includes(String(event.type)))
+          .map((event) => ({
+            type: event.type,
+            reason: typeof event.reason === "string" ? sanitizeRepairText(event.reason, inputValues) : undefined,
+            checkpointId: event.checkpointId
+          }));
+        const rawDomExcerpt = failureEvents.map(({ event }) => JSON.parse(event) as { type?: string; domExcerpt?: string })
+          .find((event) => event.type === "script_failure")?.domExcerpt ?? "";
+        const domExcerpt = sanitizeRepairText(rawDomExcerpt, inputValues);
+        if (!active?.source) return reply.code(409).send({ error: "no active adapter source to repair" });
+        if (adapterSourceContainsSecret(active.source)) return reply.code(409).send({ error: "active adapter source contains a value that cannot be sent to the repair model" });
+        const estimatedTokens = estimateRepairInputTokens(active.source, safeEvents, domExcerpt);
+        db.exec("BEGIN IMMEDIATE");
+        const current = db.prepare(`SELECT calls, input_tokens AS tokens FROM repair_model_usage WHERE run_id = ?`).get(run.id) as { calls: number; tokens: number } | undefined ?? { calls: 0, tokens: 0 };
+        if (current.calls >= FIREWORKS_MAX_CALLS || current.tokens + estimatedTokens > FIREWORKS_MAX_INPUT_TOKENS) {
+          db.exec("ROLLBACK");
+          return reply.code(429).send({ error: "Fireworks repair budget exhausted" });
+        }
+        db.prepare(`INSERT INTO repair_model_usage (run_id, calls, input_tokens) VALUES (?, 1, ?) ON CONFLICT(run_id) DO UPDATE SET calls = calls + 1, input_tokens = input_tokens + excluded.input_tokens`).run(run.id, estimatedTokens);
+        const estimatedInputCost = estimatedTokens * FIREWORKS_REPAIR_PRICE_USD_PER_MILLION.input / 1_000_000;
+        db.prepare(`INSERT INTO spend_ledger (run_id, at, provider_calls, input_tokens, output_tokens, estimated_cost_usd) VALUES (?, ?, 1, ?, 0, ?) ON CONFLICT(run_id) DO UPDATE SET provider_calls = provider_calls + 1, input_tokens = input_tokens + excluded.input_tokens, estimated_cost_usd = estimated_cost_usd + excluded.estimated_cost_usd`)
+          .run(run.id, now(), estimatedTokens, estimatedInputCost);
+        db.exec("COMMIT");
+        try {
+          const repaired = await requestModelRepair({
+            source: active.source, failureEvents: safeEvents, domExcerpt, apiKey: ctx.fireworksApiKey,
+            ...(ctx.fireworksEndpoint ? { endpoint: ctx.fireworksEndpoint } : {}),
+            priorCalls: current.calls, priorInputTokens: current.tokens,
+            onUsage: (usage) => {
+              db.prepare(`UPDATE spend_ledger SET input_tokens = input_tokens - ? + ?, output_tokens = output_tokens + ?, estimated_cost_usd = estimated_cost_usd - ? + ? WHERE run_id = ?`)
+                .run(estimatedTokens, usage.inputTokens, usage.outputTokens, estimatedInputCost, usage.estimatedCostUsd, run.id);
+              db.prepare(`UPDATE repair_model_usage SET input_tokens = input_tokens - ? + ?, output_tokens = output_tokens + ?, estimated_cost_usd = estimated_cost_usd + ? WHERE run_id = ?`)
+                .run(estimatedTokens, usage.inputTokens, usage.outputTokens, usage.estimatedCostUsd, run.id);
+              modelSpend = usage;
+            }
+          });
+          source = repaired.source;
+          generator = "model";
+        } catch (error) {
+          return reply.code(502).send({ error: error instanceof Error ? error.message : "model repair failed" });
+        }
+      }
+      if (!source) return reply.code(400).send({ error: "repair source is required" });
+      if (!sourceWithinAdapterScope(source)) return reply.code(422).send({ error: "repair candidate may change adapter source only" });
+      const id = randomUUID();
+      const hash = await definitionChecksum({ ...JSON.parse(row.definition), source });
+      let repairCdpUrl = "";
+      try { repairCdpUrl = await ctx.cdpUrl(run.tenant_id); } catch { repairCdpUrl = ""; }
+      const gates = await executeRepairGates({ source, definition: JSON.parse(row.definition) as AutomationDefinition, run, cdpUrl: repairCdpUrl });
+      const passed = gates.every((gate) => gate.passed);
+      const state = passed ? "awaiting_approval" : "gates_failed";
+      db.prepare(`INSERT INTO repair_candidates (id, tenant_id, automation_id, run_id, source, source_hash, generator, state, validation, gate_results, gate_logs, model_calls, input_tokens, output_tokens, estimated_cost_usd, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(id, req.principal.tenantId, row.id, run.id, source, hash, generator, state, JSON.stringify({ accepted: passed }), JSON.stringify(gates.map(({ name, passed }) => ({ name, passed }))), JSON.stringify(Object.fromEntries(gates.map(({ name, log }) => [name, log]))), generator === "model" ? 1 : 0, modelSpend.inputTokens, modelSpend.outputTokens, modelSpend.estimatedCostUsd, now());
+      const seq = (db.prepare(`SELECT COALESCE(MAX(seq), 0) + 1 AS n FROM run_events WHERE run_id = ?`).get(run.id) as { n: number }).n;
+      db.prepare(`INSERT INTO run_events (run_id, seq, at, event) VALUES (?, ?, ?, ?)`)
+        .run(run.id, seq, now(), JSON.stringify({ type: "repair_candidate_created", repairId: id, generator, state, gates: gates.map(({ name, passed }) => ({ name, passed })) }));
+      return reply.code(201).send({ id, state, sourceHash: hash, gates });
+    });
+    studio.get<{ Params: { id: string } }>("/studio/automations/:id/repairs", async (req) => {
+      return db.prepare(`SELECT rc.id, rc.run_id AS runId, rc.source, rc.source_hash AS sourceHash, rc.generator, rc.state, rc.validation, rc.gate_results AS gateResults, rc.gate_logs AS gateLogs, rc.rejection_reason AS rejectionReason, rc.created_at AS createdAt, rc.approved_at AS approvedAt, (SELECT ar.source FROM adapter_revisions ar WHERE ar.automation_id = rc.automation_id ORDER BY ar.revision DESC LIMIT 1) AS activeSource FROM repair_candidates rc WHERE rc.automation_id = ? AND rc.tenant_id = ? ORDER BY rc.created_at DESC`).all(req.params.id, req.principal.tenantId);
+    });
+    studio.post<{ Params: { id: string } }>("/studio/repairs/:id/approve", async (req, reply) => {
+      const candidate = db.prepare(`SELECT * FROM repair_candidates WHERE id = ? AND tenant_id = ?`).get(req.params.id, req.principal.tenantId) as { id: string; automation_id: string; run_id: string; source: string; source_hash: string; state: string; gate_results: string } | undefined;
+      if (!candidate) return reply.code(404).send({ error: "not found" });
+      if (candidate.state === "gates_failed" || candidate.state !== "awaiting_approval" || !(JSON.parse(candidate.gate_results) as { passed: boolean }[]).every((gate) => gate.passed)) return reply.code(409).send({ error: "repair gates have not all passed" });
+      const row = automation(candidate.automation_id, req.principal.tenantId);
+      if (!row) return reply.code(404).send({ error: "not found" });
+      const runAdapter = db.prepare(`SELECT adapter_revision_id FROM runs WHERE id = ?`).get(candidate.run_id) as { adapter_revision_id: string | null } | undefined;
+      const active = runAdapter?.adapter_revision_id
+        ? db.prepare(`SELECT ar.*, ov.repository_id, ov.method, ov.major FROM adapter_revisions original
+          JOIN publication_bindings pb ON pb.operation_version_id = original.operation_version_id
+          JOIN adapter_revisions ar ON ar.id = pb.adapter_revision_id
+          JOIN operation_versions ov ON ov.id = ar.operation_version_id
+          WHERE original.id = ?`).get(runAdapter.adapter_revision_id)
+        : db.prepare(`SELECT ar.*, ov.repository_id, ov.method, ov.major FROM adapter_revisions ar
+          JOIN operation_versions ov ON ov.id = ar.operation_version_id
+          WHERE ar.automation_id = ? AND EXISTS (SELECT 1 FROM publication_bindings pb WHERE pb.adapter_revision_id = ar.id)
+          ORDER BY ov.major DESC, ov.minor DESC, ar.revision DESC LIMIT 1`).get(row.id);
+      const activeAdapter = active as { id: string; operation_version_id: string; revision: number; automation_revision: number; definition_hash: string; engine: string; engine_revision: string; repository_id: string; method: string; major: number } | undefined;
+      if (!activeAdapter) return reply.code(409).send({ error: "no published adapter to repair" });
+      const adapterId = randomUUID();
+      const adapterContent = { id: adapterId, operation_version_id: activeAdapter.operation_version_id, revision: activeAdapter.revision + 1, definition_hash: activeAdapter.definition_hash, engine: "script", engine_revision: "repair", generator: "manual", source: candidate.source };
+      const adapterHash = await definitionChecksum(adapterContent as never);
+      db.prepare(`INSERT INTO adapter_revisions (id, operation_version_id, revision, definition_hash, engine, engine_revision, generator, source, automation_id, automation_revision, hash) VALUES (?, ?, ?, ?, ?, ?, 'manual', ?, ?, ?, ?)`)
+        .run(adapterId, activeAdapter.operation_version_id, activeAdapter.revision + 1, activeAdapter.definition_hash, "script", "repair", candidate.source, row.id, activeAdapter.automation_revision, adapterHash);
+      db.prepare(`UPDATE publication_bindings SET adapter_revision_id = ? WHERE repository_id = ? AND method = ? AND major = ?`).run(adapterId, activeAdapter.repository_id, activeAdapter.method, activeAdapter.major);
+      const revision = activeAdapter.revision + 1;
+      db.prepare(`UPDATE repair_candidates SET state = 'approved', approved_at = ? WHERE id = ?`).run(now(), candidate.id);
+      return { id: candidate.id, state: "approved", revision };
+    });
+    studio.post<{ Params: { id: string } }>("/studio/automations/:id/bindings/rollback", async (req, reply) => {
+      const row = automation(req.params.id, req.principal.tenantId);
+      if (!row) return reply.code(404).send({ error: "not found" });
+      const binding = db.prepare(`SELECT pb.repository_id, pb.method, pb.major, pb.operation_version_id, ar.revision FROM publication_bindings pb JOIN adapter_revisions ar ON ar.id = pb.adapter_revision_id WHERE ar.automation_id = ?`).get(row.id) as { repository_id: string; method: string; major: number; operation_version_id: string; revision: number } | undefined;
+      if (!binding || binding.revision <= 1) return reply.code(409).send({ error: "no previous adapter revision" });
+      const previous = db.prepare(`SELECT id FROM adapter_revisions WHERE operation_version_id = ? AND revision = ?`).get(binding.operation_version_id, binding.revision - 1) as { id: string } | undefined;
+      if (!previous) return reply.code(409).send({ error: "no previous adapter revision" });
+      db.prepare(`UPDATE publication_bindings SET adapter_revision_id = ? WHERE repository_id = ? AND method = ? AND major = ?`).run(previous.id, binding.repository_id, binding.method, binding.major);
+      return { state: "rolled_back", adapterRevisionId: previous.id };
+    });
+    studio.post<{ Params: { id: string }; Body: { reason?: string } }>("/studio/repairs/:id/reject", async (req, reply) => {
+      const changed = db.prepare(`UPDATE repair_candidates SET state = 'rejected', rejection_reason = ? WHERE id = ? AND tenant_id = ?`).run(req.body?.reason ?? "rejected by developer", req.params.id, req.principal.tenantId);
+      if (!changed) return reply.code(404).send({ error: "not found" });
+      return { id: req.params.id, state: "rejected" };
     });
     studio.post<{ Params: { id: string } }>("/studio/automations/:id/new-draft", async (req, reply) => {
       const row = automation(req.params.id, req.principal.tenantId);

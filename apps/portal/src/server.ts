@@ -8,6 +8,7 @@ import { lookup, type Member } from "./fixtures.js";
 
 export interface PortalState {
   sessionActive: boolean;
+  labelVariant?: boolean;
 }
 
 const escape = (value: string): string =>
@@ -42,13 +43,13 @@ function loginPage(next: string): string {
   );
 }
 
-function searchPage(message = ""): string {
+function searchPage(message = "", label = "Member ID"): string {
   return layout(
     "Member search",
     `<h1>Member search</h1>
 ${message ? `<p role="alert">${escape(message)}</p>` : ""}
 <form method="get" action="/demo-portal/members">
-<p><label>Member ID <input name="memberId" placeholder="DEMO-1001" required></label></p>
+<p><label>${label} <input name="memberId" placeholder="DEMO-1001" required></label></p>
 <button type="submit">Search</button></form>
 <p class="muted">Try DEMO-1001 or DEMO-1002. DEMO-2001 returns another member's record; DEMO-3001 is incomplete.</p>`
   );
@@ -128,7 +129,15 @@ export function createPortal(state: PortalState = { sessionActive: true }): http
 
     if (!state.sessionActive) return send(200, loginPage(url.pathname + url.search));
 
-    if (path === "/demo-portal") return send(200, searchPage());
+    if (path === "/demo-portal/admin/label-variant") {
+      if (req.method === "POST") {
+        const form = new URLSearchParams(await readBody(req));
+        state.labelVariant = form.get("enabled") === "true";
+      }
+      return send(200, JSON.stringify({ enabled: state.labelVariant === true }), "application/json");
+    }
+
+    if (path === "/demo-portal") return send(200, searchPage("", state.labelVariant || url.searchParams.get("variant") === "label" ? "Subscriber ID" : "Member ID"));
 
     if (path === "/demo-portal/members") {
       const memberId = url.searchParams.get("memberId") ?? "";

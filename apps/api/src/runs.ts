@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import {
   canonicalJson,
@@ -16,7 +17,7 @@ import type { FinishedEvent, WorkerCommand, WorkerEvent, WorkerRunner } from "./
 import type { BrowserProvider } from "./browser-provider.js";
 import { parseSessionCap, sessionLedgerId } from "./browser-provider.js";
 
-export type EngineSelection = Pick<WorkerCommand, "engine" | "script">;
+export type EngineSelection = Pick<WorkerCommand, "engine" | "script" | "adapterSource">;
 
 export interface RunManagerOptions {
   db: DatabaseSync;
@@ -25,6 +26,7 @@ export interface RunManagerOptions {
   /** Chooses the engine per run. Production uses live; offline tests use the scripted substitute and say so in metadata. */
   selectEngine: (definition: AutomationDefinition, input: Record<string, string | number | boolean>) => EngineSelection;
   browserProviders?: Partial<Record<"local" | "browserbase", BrowserProvider>>;
+  scriptRunner?: WorkerRunner;
 }
 
 export interface CreateRunParams {
@@ -39,6 +41,8 @@ export interface CreateRunParams {
   operationVersionId?: string | null;
   adapterRevisionId?: string | null;
   idempotencyKey?: string | null;
+  engine?: "live" | "scripted" | "script";
+  adapterSource?: string | null;
 }
 
 export type CreateRunResult =
@@ -59,6 +63,7 @@ export interface RunMetrics {
   policyRejections: number;
   browserSessionSeconds: number;
   connectionId?: string;
+  adapterHash?: string;
 }
 
 const INPUT_TOKEN_PRICE_USD_PER_MILLION = 0.042; // https://docs.typesafe.ai/models
@@ -143,6 +148,12 @@ export class RunManager {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(run.id, run.tenant_id, run.automation_id, run.revision, run.operation_version_id, run.adapter_revision_id, run.account_id, run.connection_id, run.caller_id, run.kind, run.state, run.input, run.idempotency_key, run.request_hash, run.created_at);
+    if (params.engine || params.adapterSource) {
+      this.requestedSelections.set(run.id, {
+        engine: params.engine ?? "script",
+        ...(params.adapterSource ? { adapterSource: params.adapterSource } : {})
+      });
+    }
     this.recordEvent(run.id, { type: "queued", position: (this.queues.get(run.account_id)?.length ?? 0) + (this.active.has(run.account_id) ? 1 : 0) });
     this.enqueue(run.account_id, run.id, params.definition);
     return { ok: true, run, reused: false };
@@ -208,6 +219,7 @@ export class RunManager {
   }
 
   private readonly definitions = new Map<string, AutomationDefinition>();
+  private readonly requestedSelections = new Map<string, EngineSelection>();
 
   private async drain(accountId: string) {
     if (this.active.has(accountId)) return;
@@ -221,6 +233,7 @@ export class RunManager {
     } finally {
       this.active.delete(accountId);
       this.definitions.delete(runId);
+      this.requestedSelections.delete(runId);
       void this.drain(accountId);
     }
   }
@@ -233,7 +246,7 @@ export class RunManager {
       (this.db.prepare(`SELECT ref, value FROM account_secrets WHERE account_id = ?`).all(run.account_id) as { ref: string; value: string }[]).map((r) => [r.ref, r.value])
     );
     const input = JSON.parse(run.input) as Record<string, string | number | boolean>;
-    const selection = this.options.selectEngine(definition, input);
+    const selection = this.requestedSelections.get(runId) ?? this.options.selectEngine(definition, input);
     const command: WorkerCommand = {
       type: "run",
       runId,
@@ -245,7 +258,8 @@ export class RunManager {
       secrets,
       evidenceDir: join(this.options.evidenceRoot, runId),
       deadlineMs: definition.limits.deadlineMs,
-      cancelOnStdinClose: true
+      cancelOnStdinClose: true,
+      ...(selection.adapterSource ? { adapterSource: selection.adapterSource } : {})
     };
     this.setState(runId, "running", { started_at: now() });
     this.recordEvent(runId, { type: "engine_selected", engine: selection.engine, live: selection.engine === "live" });
@@ -263,6 +277,7 @@ export class RunManager {
       outputTokens: 0,
       policyRejections: 0,
       browserSessionSeconds: 0
+      ,...(selection.adapterSource ? { adapterHash: createHash("sha256").update(selection.adapterSource).digest("hex") } : {})
     };
     const account = this.db.prepare(`SELECT provider, environment FROM accounts WHERE id = ?`).get(run.account_id) as { provider: string; environment: string } | undefined;
     let cdpUrlOverride: string | undefined;
@@ -301,7 +316,8 @@ export class RunManager {
 
     let handle: ReturnType<WorkerRunner["start"]>;
     try {
-      handle = this.options.runner.start(command, (event) => {
+      const selectedRunner = selection.engine === "script" ? (this.options.scriptRunner ?? this.options.runner) : this.options.runner;
+      handle = selectedRunner.start(command, (event) => {
       if (event.type === "model_call") {
         metrics.modelCalls += 1;
         if (typeof event.latencyMs === "number") metrics.modelLatencyMs.push(event.latencyMs);

@@ -8,6 +8,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { TODO_TEMPLATES } from "@gateway/definition";
 import { resolveChromeExecutable } from "@gateway/recorder";
+import { RenderProvider, runDeployCommand } from "./deploy.js";
 
 /** Root of the Pixie checkout this CLI was built in; `pixie dev`/`doctor` operate on that checkout. */
 export const CHECKOUT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -51,7 +52,19 @@ const HELP = `pixie — local developer CLI for the Pixie gateway (runs from thi
   pixie definition set <id> <file>
   pixie draft <id>                fork a published automation into a new draft
   pixie test <id> [--account <id>] [--input '<json>'] [--follow]
+  pixie generate <id> [--recording <file>]
+  pixie test <id> --engine script
+  pixie portal label-variant --enabled|--disabled
+  pixie repair <id> --run <runId> [--source file | --model]
+  pixie repairs <id>
+  pixie approve <repairId>
+  pixie reject <repairId> --reason <text>
+  pixie rollback <id>
   pixie publish <id>              publish the tested definition
+  pixie deploy services           list Render service names (read-only)
+  pixie deploy status             show the configured runtime deploy status
+  pixie deploy runtime            deploy the configured runtime (explicit opt-in required)
+  pixie activations <id>          show publication activation history
   pixie models                    list published output models
   pixie repos                     list published repositories
   pixie ops [repo]                list declared repository operations
@@ -751,9 +764,10 @@ export async function testRun(
   input: unknown,
   out: Out = stdio,
   follow = false,
-  jsonMode = false
+  jsonMode = false,
+  engine?: string
 ): Promise<number> {
-  const started = await studioRequest(project, "POST", `/studio/automations/${encodeURIComponent(automationId)}/test`, { accountId, input });
+  const started = await studioRequest(project, "POST", `/studio/automations/${encodeURIComponent(automationId)}/test`, { accountId, input, ...(engine ? { engine } : {}) });
   if (started.status !== 202) return reportApiError(out, "test", started, jsonMode);
   const runId = String(asObject(started.json)?.id ?? "");
   if (!follow) {
@@ -790,6 +804,12 @@ export async function publish(project: Project, automationId: string, out: Out =
   const result = asObject(response.json);
   const revision = String(result?.revision ?? "");
   out.log(`published ${automationId} revision ${revision} (checksum ${String(result?.checksum ?? "")})`);
+  const artifact = asObject(result?.artifact);
+  const activation = asObject(result?.activation);
+  if (artifact) {
+    out.log(`artifact ${String(artifact.hash)} (${artifact.reused ? "reused" : "new"})`);
+  }
+  if (activation) out.log(`activation ${String(activation.id)} state=${String(activation.state)}`);
   if (result?.compatibility) {
     const model = asObject(result.modelVersion);
     const operation = asObject(result.operationVersion);
@@ -802,6 +822,26 @@ export async function publish(project: Project, automationId: string, out: Out =
     `invoke as a client:\n  pixie invoke ${automationId} --revision ${revision} --account ${project.accountId} --input '{}' --follow`
   );
   return 0;
+}
+
+async function adapterRequest(project: Project, method: string, path: string, body: unknown, out: Out, jsonMode: boolean): Promise<number> {
+  const response = await studioRequest(project, method, path, body);
+  if (response.status < 200 || response.status >= 300) return reportApiError(out, "adapter", response, jsonMode);
+  const result = asObject(response.json);
+  const unsupported = result?.unsupported;
+  if (Array.isArray(unsupported) && unsupported.length > 0) {
+    out.error(`adapter generation failed: ${JSON.stringify(unsupported)}`);
+    return 1;
+  }
+  if (jsonMode) emitApiJson(out, response);
+  else out.log(JSON.stringify(response.json, null, 2));
+  return 0;
+}
+
+async function generate(project: Project, id: string, recordingFile: string | undefined, out: Out, jsonMode: boolean): Promise<number> {
+  if (!recordingFile) return adapterRequest(project, "GET", `/studio/automations/${encodeURIComponent(id)}/generated`, undefined, out, jsonMode);
+  const recording = JSON.parse(readFileSync(resolve(recordingFile), "utf8")) as { events: unknown[] };
+  return adapterRequest(project, "POST", `/studio/automations/${encodeURIComponent(id)}/generated`, { recording }, out, jsonMode);
 }
 
 async function contractList(project: Project, kind: "models" | "repositories" | "operations", repo: string | undefined, out: Out, jsonMode: boolean): Promise<number> {
@@ -1094,6 +1134,14 @@ export async function main(argv: string[], out: Out = stdio): Promise<number> {
     repo?: string;
     method?: string;
     version?: string;
+    engine?: string;
+    source?: string;
+    run?: string;
+    model?: boolean;
+    reason?: string;
+    recording?: string;
+    enabled?: boolean;
+    disabled?: boolean;
   }
   let parsed: { values: CliOptions; positionals: string[] };
   try {
@@ -1106,6 +1154,8 @@ export async function main(argv: string[], out: Out = stdio): Promise<number> {
         automation: { type: "string" },
         "allowed-origin": { type: "string", multiple: true },
         events: { type: "boolean" },
+        enabled: { type: "boolean" },
+        disabled: { type: "boolean" },
         follow: { type: "boolean" },
         headless: { type: "boolean" },
         help: { type: "boolean", short: "h" },
@@ -1124,6 +1174,12 @@ export async function main(argv: string[], out: Out = stdio): Promise<number> {
         repo: { type: "string" },
         method: { type: "string" },
         version: { type: "string" },
+        engine: { type: "string" },
+        source: { type: "string" },
+        run: { type: "string" },
+        model: { type: "boolean" },
+        reason: { type: "string" },
+        recording: { type: "string" },
         ref: { type: "string" },
         revision: { type: "string" },
         role: { type: "string" },
@@ -1165,6 +1221,20 @@ export async function main(argv: string[], out: Out = stdio): Promise<number> {
         return doctor(project, out, jsonMode);
       case "dev":
         return dev(project, { scripted: values.scripted === true, headless: values.headless === true, portal: values.portal === true }, out);
+      case "portal": {
+        if (arg !== "label-variant" || values.enabled === values.disabled) return usage(out, "pixie portal label-variant --enabled|--disabled");
+        const response = await fetch(`${project.portalOrigin}/demo-portal/admin/label-variant`, {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({ enabled: String(values.enabled === true) })
+        });
+        if (!response.ok) {
+          out.error(`pixie portal: HTTP ${response.status}`);
+          return 1;
+        }
+        out.log(`portal label variant ${values.enabled ? "enabled" : "disabled"}`);
+        return 0;
+      }
       case "list":
         return list(project, out, jsonMode);
       case "accounts":
@@ -1216,11 +1286,37 @@ export async function main(argv: string[], out: Out = stdio): Promise<number> {
           out.error(`pixie test: --input must be valid JSON (${(error as Error).message})`);
           return 2;
         }
-        return testRun(project, arg, values.account ?? project.accountId, input, out, values.follow === true, jsonMode);
+        return testRun(project, arg, values.account ?? project.accountId, input, out, values.follow === true, jsonMode, values.engine as string | undefined);
       }
+      case "generate":
+        if (!required(arg, "pixie generate <automationId> [--recording <file>]")) return 2;
+        return generate(project, arg, values.recording, out, jsonMode);
+      case "repair": {
+        if (!required(arg, "pixie repair <automationId> --run <runId> [--source file | --model]")) return 2;
+        let source: string | undefined;
+        if (values.source) source = readFileSync(String(values.source), "utf8");
+        return adapterRequest(project, "POST", `/studio/automations/${encodeURIComponent(arg)}/repairs`, { runId: values.run, source, model: values.model === true }, out, jsonMode);
+      }
+      case "repairs":
+        if (!required(arg, "pixie repairs <automationId>")) return 2;
+        return adapterRequest(project, "GET", `/studio/automations/${encodeURIComponent(arg)}/repairs`, undefined, out, jsonMode);
+      case "approve":
+        if (!required(arg, "pixie approve <repairId>")) return 2;
+        return adapterRequest(project, "POST", `/studio/repairs/${encodeURIComponent(arg)}/approve`, {}, out, jsonMode);
+      case "reject":
+        if (!required(arg, "pixie reject <repairId> --reason <text>")) return 2;
+        return adapterRequest(project, "POST", `/studio/repairs/${encodeURIComponent(arg)}/reject`, { reason: values.reason }, out, jsonMode);
+      case "rollback":
+        if (!required(arg, "pixie rollback <automationId>")) return 2;
+        return adapterRequest(project, "POST", `/studio/automations/${encodeURIComponent(arg)}/bindings/rollback`, {}, out, jsonMode);
       case "publish":
         if (!required(arg, "pixie publish <automationId>")) return 2;
         return publish(project, arg, out, jsonMode);
+      case "deploy":
+        return runDeployCommand(arg, new RenderProvider(process.env.RENDER_API_KEY ?? ""), process.env, out);
+      case "activations":
+        if (!required(arg, "pixie activations <activationId>")) return 2;
+        return adapterRequest(project, "GET", `/studio/activations/${encodeURIComponent(arg)}`, undefined, out, jsonMode);
       case "models":
         return contractList(project, "models", undefined, out, jsonMode);
       case "repos":

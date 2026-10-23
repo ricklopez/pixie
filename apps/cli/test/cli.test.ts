@@ -154,7 +154,19 @@ async function withApi(run: (baseUrl: string, requests: RequestRecord[]) => Prom
         });
       }
       if (path === "/studio/automations/auto-1/publish" && record.method === "POST") {
-        return send(201, { automationId: "auto-1", revision: 1, checksum: "published-checksum", openapiUrl: "http://127.0.0.1:4180/v1/automations/auto-1/openapi.json" });
+        return send(201, {
+          automationId: "auto-1", revision: 1, checksum: "published-checksum",
+          openapiUrl: "http://127.0.0.1:4180/v1/automations/auto-1/openapi.json",
+          compatibility: "adapter", repository: "repo", method: "get",
+          modelVersion: { id: "model-1", major: 1, minor: 0 },
+          operationVersion: { id: "operation-1", major: 1, minor: 0 },
+          adapterRevision: { id: "adapter-1", revision: 1 },
+          artifact: { hash: "artifact-hash", size: 1024, reused: true },
+          activation: { id: "activation-1", state: "active" }
+        });
+      }
+      if (path === "/studio/activations/activation-1" && record.method === "GET") {
+        return send(200, { id: "activation-1", state: "active", artifactHash: "artifact-hash" });
       }
       if (path === "/studio/models" && record.method === "GET") return send(200, [{ name: "repo.get.output", major: 1, minor: 0, identityFields: ["memberId"] }]);
       if (path === "/studio/repositories" && record.method === "GET") return send(200, [{ name: "repo", operationCount: 1 }]);
@@ -168,6 +180,14 @@ async function withApi(run: (baseUrl: string, requests: RequestRecord[]) => Prom
         return send(409, { error: "only automations in state 'ready' can be published" });
       }
       if (path === "/studio/automations/auto-1/new-draft" && record.method === "POST") return send(201, { ...automation, id: "auto-draft" });
+      if (path === "/studio/automations/auto-1/generated" && ["GET", "POST"].includes(record.method)) {
+        return send(200, { source: "export async function run() {}", hash: "generated-hash", unsupported: [] });
+      }
+      if (path === "/studio/automations/auto-1/repairs" && record.method === "POST") return send(201, { id: "repair-1", state: "awaiting_approval", gates: [] });
+      if (path === "/studio/automations/auto-1/repairs" && record.method === "GET") return send(200, [{ id: "repair-1", state: "awaiting_approval", gates: [] }]);
+      if (path === "/studio/repairs/repair-1/approve" && record.method === "POST") return send(200, { id: "repair-1", state: "approved" });
+      if (path === "/studio/repairs/repair-1/reject" && record.method === "POST") return send(200, { id: "repair-1", state: "rejected" });
+      if (path === "/studio/automations/auto-1/bindings/rollback" && record.method === "POST") return send(200, { automationId: "auto-1", adapterRevisionId: "previous" });
       if (path === "/studio/automations/auto-1/openapi.json" && record.method === "GET") return send(200, { openapi: "3.1.0", paths: {} });
       if (path === "/studio/automations/auto-1/export" && record.method === "GET") return send(200, { files: { "README.md": "# export" } });
       if (path === "/studio/api-keys" && record.method === "POST") return send(201, { id: "key-1", token: "newly-created-token" });
@@ -251,6 +271,51 @@ test("pixie init uses local synthetic defaults, never writes credentials, and re
   assert.equal(loadProject(dir).accountId, "acct_mine", "existing pixie.json untouched");
   assert.ok(lines.some((line) => line.includes("refusing")));
   assert.equal(readFileSync(resolve(dir, ".env.example"), "utf8").includes("TYPESAFE_API_KEY="), true);
+});
+
+test("generate and reviewed repair lifecycle commands use their shared API routes", async () => {
+  await withApi(async (_baseUrl, requests) => {
+    const recording = new URL("../../../fixtures/recorded-eligibility.json", import.meta.url);
+    const generated = capture();
+    assert.equal(await main(["generate", "auto-1", "--recording", recording.pathname, "--json"], generated.out), 0);
+    assert.equal(JSON.parse(generated.lines[0]!).hash, "generated-hash");
+
+    const sourceFile = resolve(process.cwd(), "repair-adapter.mjs");
+    writeFileSync(sourceFile, "export async function run(page, input) { return {}; }\n");
+    const repaired = capture();
+    assert.equal(await main(["repair", "auto-1", "--run", "run-1", "--source", sourceFile, "--json"], repaired.out), 0);
+    assert.equal(JSON.parse(repaired.lines[0]!).id, "repair-1");
+    const repairs = capture();
+    assert.equal(await main(["repairs", "auto-1", "--json"], repairs.out), 0);
+    assert.equal(JSON.parse(repairs.lines[0]!).length, 1);
+    assert.equal(await main(["approve", "repair-1", "--json"], capture().out), 0);
+    assert.equal(await main(["reject", "repair-1", "--reason", "not safe", "--json"], capture().out), 0);
+    assert.equal(await main(["rollback", "auto-1", "--json"], capture().out), 0);
+
+    const generatedRequest = requests.find((request) => request.url === "/studio/automations/auto-1/generated" && request.method === "POST")!;
+    assert.ok(generatedRequest.body && typeof generatedRequest.body === "object" && "recording" in generatedRequest.body);
+    const repairRequest = requests.find((request) => request.url === "/studio/automations/auto-1/repairs")!;
+    assert.deepEqual(repairRequest.body, { runId: "run-1", source: "export async function run(page, input) { return {}; }\n", model: false });
+    const listRepairsRequest = requests.find((request) => request.url === "/studio/automations/auto-1/repairs" && request.method === "GET")!;
+    assert.equal(listRepairsRequest.body, null);
+    assert.ok(requests.some((request) => request.url === "/studio/repairs/repair-1/approve"));
+    assert.ok(requests.some((request) => request.url === "/studio/repairs/repair-1/reject" && (request.body as { reason?: string }).reason === "not safe"));
+    assert.ok(requests.some((request) => request.url === "/studio/automations/auto-1/bindings/rollback"));
+  });
+});
+
+test("publish reports artifact reuse and activation, and activations retrieves its timeline", async () => {
+  await withApi(async (_baseUrl, requests) => {
+    const published = capture();
+    assert.equal(await main(["publish", "auto-1"], published.out), 0);
+    assert.ok(published.lines.some((line) => line.includes("artifact-hash") && line.includes("reused")));
+    assert.ok(published.lines.some((line) => line.includes("activation-1") && line.includes("active")));
+
+    const timeline = capture();
+    assert.equal(await main(["activations", "activation-1", "--json"], timeline.out), 0);
+    assert.equal(JSON.parse(timeline.lines[0]!).state, "active");
+    assert.ok(requests.some((request) => request.url === "/studio/activations/activation-1" && request.method === "GET"));
+  });
 });
 
 test("MCP CLI config uses an environment reference and call sends the client token", async () => {

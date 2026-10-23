@@ -88,16 +88,25 @@ export async function startRun(ctx: OperationsContext, principal: Principal, par
   if (typeof accountId !== "string" || !accountId) return { status: 400, body: { error: "'accountId' is required" } };
   const account = db.prepare(`SELECT id FROM accounts WHERE id = ? AND tenant_id = ?`).get(accountId, principal.tenantId);
   if (!account) return { status: 403, body: { error: "account is not available to this key" } };
+  const adapter = db.prepare(`SELECT ar.id, ar.operation_version_id, ar.engine, ar.source
+    FROM adapter_revisions ar LEFT JOIN publication_bindings b ON b.adapter_revision_id = ar.id
+    WHERE ar.automation_id = ? AND ar.automation_revision = ?
+    ORDER BY (b.adapter_revision_id IS NULL), ar.revision DESC LIMIT 1`).get(row.id, revision.revision) as {
+      id: string; operation_version_id: string; engine: string; source: string | null;
+    } | undefined;
   const created = await ctx.runs.create({
     tenantId: principal.tenantId,
     automationId: row.id,
     revision: revision.revision,
+    ...(adapter ? { operationVersionId: adapter.operation_version_id, adapterRevisionId: adapter.id } : {}),
     definition: JSON.parse(revision.definition) as AutomationDefinition,
     accountId,
     callerId: principal.keyId,
     kind: "endpoint",
     input: params.input,
-    idempotencyKey: params.idempotencyKey ?? null
+    idempotencyKey: params.idempotencyKey ?? null,
+    ...(adapter?.engine === "script" ? { engine: "script" as const } : {}),
+    ...(adapter?.engine === "script" && adapter.source ? { adapterSource: adapter.source } : {})
   });
   if (!created.ok) return { status: created.status, body: { error: created.error, ...(created.details ? { details: created.details } : {}) } };
   const run = ctx.runs.get(created.run.id)!;
@@ -143,7 +152,9 @@ export async function startContractRun(
     callerId: principal.keyId,
     kind: "endpoint",
     input: params.input,
-    idempotencyKey: params.idempotencyKey ?? null
+    idempotencyKey: params.idempotencyKey ?? null,
+    ...(binding.engine === "script" ? { engine: "script" as const } : {}),
+    ...(typeof binding.source === "string" && binding.source ? { adapterSource: binding.source } : {})
   });
   if (!created.ok) {
     const status = created.status === 400 ? 422 : created.status;
