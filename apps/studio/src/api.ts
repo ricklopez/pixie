@@ -130,7 +130,27 @@ export interface Run {
   startedAt: string | null;
   finishedAt: string | null;
   failure: { reason?: string; reasons?: string[] } | null;
-  metrics: { engine: string; engineRevision: string; modelCalls: number; actions: number; elapsedMs: number; modelLatencyMs: number[]; inputTokens: number; outputTokens: number; policyRejections: number } | null;
+  metrics: {
+    engine: string;
+    engineRevision: string;
+    modelCalls: number;
+    providerCalls?: number;
+    estimatedCostUsd?: number;
+    actions: number;
+    elapsedMs: number;
+    modelLatencyMs: number[];
+    inputTokens: number;
+    outputTokens: number;
+    policyRejections: number;
+    browserSessionSeconds?: number;
+    connectionId?: string;
+  } | null;
+}
+
+export interface SpendSummary {
+  rows: { runId: string; at: string; providerCalls: number; inputTokens: number; estimatedCostUsd: number }[];
+  browserSessionSeconds?: number;
+  total: { providerCalls: number; inputTokens: number; estimatedCostUsd: number };
 }
 
 export interface RunEvidence {
@@ -151,5 +171,19 @@ export interface Account {
   id: string;
   name: string;
   portalOrigin: string;
+  provider?: "local" | "browserbase";
+  environment?: string;
   createdAt: string;
+}
+
+export interface Connection {
+  id: string;
+  accountId: string;
+  accountName: string;
+  environment: string;
+  provider: "browserbase";
+  state: "disconnected" | "connecting" | "connected" | "auth_required";
+  contextStatus?: string;
+  lastVerifiedAt?: string | null;
+  controller?: boolean;
 }

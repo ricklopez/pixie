@@ -25,6 +25,7 @@ tracked = subprocess.check_output(["git", "ls-files", "-z"], cwd=root).decode().
 for name in filter(None, tracked):
     path = Path(name)
     assert not (path.name == ".env" or (path.name.startswith(".env.") and path.name != ".env.example")), f"Tracked environment file: {name}"
-    assert not set(path.parts) & {"recordings", "evidence", "browser-data", "profiles", "artifacts"}, f"Tracked runtime data: {name}"
+    committed_experiment_log = name.startswith("experiments/001-todo/evidence/") and path.suffix in {".json", ".jsonl"}
+    assert committed_experiment_log or not set(path.parts) & {"recordings", "evidence", "browser-data", "profiles", "artifacts"}, f"Tracked runtime data: {name}"
     assert path.suffix not in {".pem", ".key", ".sqlite", ".sqlite3", ".db"}, f"Tracked sensitive/runtime file: {name}"
 print("Repository handoff files and tracked-file hygiene checks passed; application tests not implemented.")

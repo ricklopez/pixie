@@ -74,6 +74,9 @@ export function validateDefinition(input: unknown, options: { allowLoopback?: bo
   if (d.schemaVersion !== SCHEMA_VERSION) push("schemaVersion", `must be ${SCHEMA_VERSION}`);
   if (typeof d.id !== "string" || !ID.test(d.id)) push("id", "must be a lowercase slug");
   if (typeof d.name !== "string" || !d.name.trim()) push("name", "required");
+  if (d.repository !== undefined && (typeof d.repository !== "string" || !ID.test(d.repository))) push("repository", "must be a lowercase slug");
+  if (d.method !== undefined && (typeof d.method !== "string" || !/^[a-z][a-z0-9_-]{0,63}$/.test(d.method))) push("method", "must be a lowercase operation name");
+  if (d.adapterGenerator !== undefined && !["template", "recorded", "manual"].includes(String(d.adapterGenerator))) push("adapterGenerator", "must be template, recorded, or manual");
   if (d.engine !== ENGINE) push("engine", `must be ${ENGINE}`);
   if (typeof d.engineRevision !== "string" || !/^[0-9a-f]{40}$/.test(d.engineRevision)) push("engineRevision", "must be a full commit sha");
   if (d.effect !== "read" && d.effect !== "write") push("effect", "must be 'read' or 'write'");
@@ -190,6 +193,25 @@ export function validateDefinition(input: unknown, options: { allowLoopback?: bo
     } else push(`${p}.extractor.kind`, "unsupported extractor; only labelValue, tableCell, listItems and observedAt are implemented");
     if (field.type === "list" && ex?.kind !== "listItems") push(`${p}.type`, "list outputs need a listItems extractor");
   });
+  if (d.keyFields !== undefined) {
+    if (!Array.isArray(d.keyFields) || d.keyFields.some((field) => typeof field !== "string")) {
+      push("keyFields", "must be an array of output field names or list-item text paths");
+    } else {
+      const seen = new Set<string>();
+      d.keyFields.forEach((field, i) => {
+        const output = outputs.find((item) => isRecord(item) && item.name === field) as Partial<OutputField> | undefined;
+        const listItemPath = /^([A-Za-z_][A-Za-z0-9_]*)\.text$/.exec(field);
+        const listOutput = listItemPath
+          ? outputs.find((item) => isRecord(item) && item.name === listItemPath[1]) as Partial<OutputField> | undefined
+          : undefined;
+        const validListItemKey = listOutput?.type === "list" && listOutput.required === true && listOutput.extractor?.kind === "listItems";
+        if (seen.has(field)) push(`keyFields[${i}]`, "duplicate key field");
+        else if (!output && !validListItemKey) push(`keyFields[${i}]`, "must name a required output field or list item's text");
+        else if (output && output.required !== true) push(`keyFields[${i}]`, "key fields must be required outputs");
+        seen.add(field);
+      });
+    }
+  }
 
   const assertions = Array.isArray(d.assertions) ? (d.assertions as unknown[]) : [];
   assertions.forEach((a, i) => {

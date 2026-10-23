@@ -12,6 +12,7 @@ export const TODO_PREFIX = "pixie-demo ";
  * and carry the Pixie demo prefix. Delete moves a task to an in-memory Trash (restorable until reload only).
  */
 const tasks: ListSpec = { item: "li.todo-item", text: ".todo-content", completed: ".todo-content.completed" };
+const TODO_ITEM_IDENTITY = "tasks.text";
 
 const affordances: Affordance[] = [
   { selector: "li.todo-item .btn-delete", role: "button", label: "Delete task: {{text}}", item: "li.todo-item", itemText: ".todo-content" },
@@ -24,6 +25,8 @@ const affordances: Affordance[] = [
 function base(id: string, name: string, origin: string): AutomationDefinition {
   return {
     ...newDefinition({ id, name, startUrl: `${origin}/`, allowedOrigins: [origin] }),
+    keyFields: [TODO_ITEM_IDENTITY],
+    adapterGenerator: "template",
     lists: { tasks },
     affordances,
     limits: { maxActions: 12, deadlineMs: 90_000 },
@@ -37,6 +40,7 @@ const observedAt = { name: "observedAt", type: "date" as const, required: true, 
 export function createTodoDefinition(origin = TODO_ORIGIN): AutomationDefinition {
   return {
     ...base("create-todo", "Create todo", origin),
+    method: "create",
     effect: "write",
     checkpoints: [
       {
@@ -81,6 +85,7 @@ export function listTodosDefinition(origin = TODO_ORIGIN): AutomationDefinition 
 export function updateTodoDefinition(origin = TODO_ORIGIN): AutomationDefinition {
   return {
     ...base("update-todo", "Update todo", origin),
+    method: "update",
     effect: "write",
     checkpoints: [
       {
@@ -124,6 +129,7 @@ export function updateTodoDefinition(origin = TODO_ORIGIN): AutomationDefinition
 export function deleteTodoDefinition(origin = TODO_ORIGIN): AutomationDefinition {
   return {
     ...base("delete-todo", "Delete todo", origin),
+    method: "delete",
     effect: "write",
     checkpoints: [
       {

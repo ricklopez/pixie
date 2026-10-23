@@ -22,6 +22,7 @@ export interface FakeRunnerOptions {
   /** Delay before the worker finishes, to observe queued/running/cancel behaviour. */
   delayMs?: number;
   mode?: "portal" | "model-down";
+  providerCalls?: number;
 }
 
 /**
@@ -42,15 +43,16 @@ export class FakeRunner implements WorkerRunner {
       };
       setTimeout(() => {
         onEvent({ type: "started", runId: command.runId, engine: command.engine });
-        if (cancelled) return done({ type: "finished", outcome: "cancelled", reason: "Cancellation requested", elapsedMs: 1, modelCalls: 0, actions: 0 });
+        for (let i = 0; i < (this.options.providerCalls ?? 0); i += 1) onEvent({ type: "provider_call", provider: "typesafe" });
+        if (cancelled) return done({ type: "finished", outcome: "cancelled", reason: "Cancellation requested", elapsedMs: 1, modelCalls: 0, providerCalls: this.options.providerCalls ?? 0, actions: 0 });
         if (this.options.mode === "model-down") {
-          return done({ type: "finished", outcome: "failed", reason: "RuntimeError: Model provider returned HTTP 503; no action executed.", elapsedMs: 5, modelCalls: 1, actions: 0 });
+          return done({ type: "finished", outcome: "failed", reason: "RuntimeError: Model provider returned HTTP 503; no action executed.", elapsedMs: 5, modelCalls: 1, providerCalls: this.options.providerCalls ?? 0, actions: 0 });
         }
         const memberId = String(command.input.memberId);
         const view = PORTAL_VIEW[memberId];
         onEvent({ type: "checkpoint", id: "search-form", status: "started" });
         onEvent({ type: "observation", url: `${PORTAL}/demo-portal`, actionCount: 2, fingerprint: "fake-1", elapsedMs: 1 });
-        onEvent({ type: "model_call", checkpointId: "search-form", model: "fake", latencyMs: 7, operation: "TYPE_TEXT", target: "1", choice: "e1", confidence: 1, usage: { input_tokens: 10, output_tokens: 2 }, elapsedMs: 1 });
+        onEvent({ type: "model_call", checkpointId: "search-form", model: "fake", latencyMs: 7, operation: "TYPE_TEXT", target: "1", choice: "e1", confidence: 1, usage: this.options.providerCalls ? { input_tokens: 25000, output_tokens: 2 } : {}, elapsedMs: 1 });
         onEvent({ type: "policy_allowed", checkpointId: "search-form", action: "Member ID", kind: "fill", boundInput: "memberId" });
         onEvent({ type: "action", checkpointId: "search-form", step: 1, action: "Member ID", kind: "fill", boundInput: "memberId", page_changed: true, url: `${PORTAL}/demo-portal`, typedLength: memberId.length });
         mkdirSync(command.evidenceDir, { recursive: true });
@@ -58,12 +60,12 @@ export class FakeRunner implements WorkerRunner {
         onEvent({ type: "screenshot", checkpointId: "search-form", label: "after", ref: "search-form-after.jpg" });
         if (view === "login") {
           onEvent({ type: "auth_required", signal: { kind: "urlMatches", pattern: "/demo-portal/login" }, url: `${PORTAL}/demo-portal/login` });
-          return done({ type: "finished", outcome: "auth_required", reason: "Login required detected at checkpoint 'search-form'", elapsedMs: 9, modelCalls: 1, actions: 1 });
+          return done({ type: "finished", outcome: "auth_required", reason: "Login required detected at checkpoint 'search-form'", elapsedMs: 9, modelCalls: 1, providerCalls: this.options.providerCalls ?? 0, actions: 1 });
         }
         if (!view) {
           onEvent({ type: "checkpoint", id: "search-form", status: "failed", reason: "action budget exhausted" });
           // Like a real worker, the free-text reason may quote page content, including whatever the caller typed.
-          return done({ type: "finished", outcome: "blocked", reason: `Checkpoint 'search-form' action budget exhausted; page shows "No member ${memberId}"`, elapsedMs: 9, modelCalls: 1, actions: 1 });
+          return done({ type: "finished", outcome: "blocked", reason: `Checkpoint 'search-form' action budget exhausted; page shows "No member ${memberId}"`, elapsedMs: 9, modelCalls: 1, providerCalls: this.options.providerCalls ?? 0, actions: 1 });
         }
         onEvent({ type: "checkpoint", id: "search-form", status: "passed", actions: 1, elapsedMs: 3 });
         const outputs = Object.fromEntries(
@@ -72,7 +74,7 @@ export class FakeRunner implements WorkerRunner {
             .map((o) => [o.name, { value: view[o.name] ?? null, source: `label '${o.name}'`, checkpointId: "benefits-overview" }])
         );
         onEvent({ type: "extraction", outputs, observedAt: new Date().toISOString(), finalUrl: `${PORTAL}/demo-portal/members/${view.memberId}/benefits` });
-        done({ type: "finished", outcome: "extracted", reason: null, elapsedMs: 12, modelCalls: 1, actions: 1 });
+        done({ type: "finished", outcome: "extracted", reason: null, elapsedMs: 12, modelCalls: 1, providerCalls: this.options.providerCalls ?? 0, actions: 1 });
       }, this.options.delayMs ?? 0);
     });
     return { finished, cancel: () => (cancelled = true) };
@@ -93,7 +95,7 @@ export async function testApp(runnerOptions: FakeRunnerOptions = {}) {
     },
     allowLoopback: true,
     publicBaseUrl: "http://gateway.test",
-    selectEngine: () => ({ engine: "scripted", script: [] })
+    selectEngine: () => ({ engine: runnerOptions.providerCalls ? "live" : "scripted", script: [] })
   });
   await built.app.ready();
   return { ...built, runner, db };

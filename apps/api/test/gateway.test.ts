@@ -1,20 +1,73 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { createApiKey } from "../src/auth.js";
 import { call, PORTAL, publishEligibility, testApp, TOKENS } from "./helpers.js";
 
 test("lifecycle: draft -> configuring -> testing -> ready -> published, revisions immutable", async () => {
-  const { app, runs, shutdown } = await testApp();
+  const { app, db, runs, shutdown } = await testApp();
   const { id, revision } = await publishEligibility(app, runs);
   assert.equal(revision, 1);
   const view = await call(app, TOKENS.developer, "GET", `/studio/automations/${id}`);
   assert.equal(view.json.state, "published");
   const edit = await call(app, TOKENS.developer, "PUT", `/studio/automations/${id}/definition`, view.json.definition);
   assert.equal(edit.status, 409);
+  db.prepare(`UPDATE automations SET name = ? WHERE id = ?`).run("Eligibility (draft) (draft)", id);
   const draft = await call(app, TOKENS.developer, "POST", `/studio/automations/${id}/new-draft`);
   assert.equal(draft.status, 201);
   assert.equal(draft.json.state, "configuring");
+  assert.equal(draft.json.name, "Eligibility (draft)");
+  assert.equal((draft.json.definition as { name: string }).name, "Eligibility (draft)");
   const premature = await call(app, TOKENS.developer, "POST", `/studio/automations/${draft.json.id}/publish`);
   assert.equal(premature.status, 409);
+  await shutdown();
+});
+
+test("Studio reports the configured public API URL", async () => {
+  const { app, shutdown } = await testApp();
+  try {
+    const me = await call(app, TOKENS.developer, "GET", "/studio/me");
+    assert.equal(me.status, 200);
+    assert.equal(me.json.publicApiUrl, "http://gateway.test");
+  } finally {
+    await shutdown();
+  }
+});
+
+test("scripted decisions stay separate from provider calls and spend", async () => {
+  const { app, runs, shutdown } = await testApp();
+  const { id, testRunId } = await publishEligibility(app, runs);
+  const listed = await call(app, TOKENS.developer, "GET", `/studio/runs?automationId=${id}`);
+  const run = (listed.json as unknown as { id: string; metrics: Record<string, number> }[]).find((entry) => entry.id === testRunId)!;
+  assert.equal(run.metrics.modelCalls, 1);
+  assert.equal(run.metrics.providerCalls, 0);
+  assert.equal(run.metrics.estimatedCostUsd, 0);
+  const spend = await call(app, TOKENS.developer, "GET", "/studio/spend");
+  assert.deepEqual(spend.json, { rows: [], browserSessionSeconds: 0, total: { providerCalls: 0, inputTokens: 0, estimatedCostUsd: 0 } });
+  assert.equal((await call(app, TOKENS.client, "GET", "/studio/spend")).status, 403);
+  await shutdown();
+});
+
+test("provider metrics and spend ledger are recorded once and scoped to the tenant", async () => {
+  const { app, runs, shutdown, db } = await testApp({ providerCalls: 2 });
+  const { id, testRunId } = await publishEligibility(app, runs);
+  const listed = await call(app, TOKENS.developer, "GET", `/studio/runs?automationId=${id}`);
+  const run = (listed.json as unknown as { id: string; metrics: Record<string, number> }[]).find((entry) => entry.id === testRunId)!;
+  assert.equal(run.metrics.modelCalls, 1);
+  assert.equal(run.metrics.providerCalls, 2);
+  assert.equal(run.metrics.inputTokens, 25000);
+  assert.equal(run.metrics.estimatedCostUsd, 0.00105);
+
+  const spend = await call(app, TOKENS.developer, "GET", "/studio/spend");
+  const row = (spend.json.rows as { runId: string; providerCalls: number; inputTokens: number; estimatedCostUsd: number }[])[0]!;
+  assert.equal(row.runId, testRunId);
+  assert.equal(row.providerCalls, 2);
+  assert.equal(row.inputTokens, 25000);
+  assert.equal(row.estimatedCostUsd, 0.00105);
+  assert.deepEqual(spend.json.total, { providerCalls: 2, inputTokens: 25000, estimatedCostUsd: 0.00105 });
+
+  createApiKey(db, "tenant_other", "other developer", "developer", "other-dev-token");
+  const foreign = await call(app, "other-dev-token", "GET", "/studio/spend");
+  assert.deepEqual(foreign.json, { rows: [], browserSessionSeconds: 0, total: { providerCalls: 0, inputTokens: 0, estimatedCostUsd: 0 } });
   await shutdown();
 });
 

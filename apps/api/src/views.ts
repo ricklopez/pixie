@@ -7,6 +7,8 @@ export function runView(run: RunRow) {
     id: run.id,
     automationId: run.automation_id,
     revision: run.revision,
+    ...(run.operation_version_id ? { operationVersionId: run.operation_version_id } : {}),
+    ...(run.adapter_revision_id ? { adapterRevisionId: run.adapter_revision_id } : {}),
     accountId: run.account_id,
     kind: run.kind,
     state: run.state,

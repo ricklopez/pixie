@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { todoScript } from "@gateway/definition";
 import { bootstrap, buildApp } from "./app.js";
+import { BrowserbaseProvider, LocalBrowserProvider } from "./browser-provider.js";
 import { BrowserPool, recorderProfile } from "./browsers.js";
 import { openDatabase } from "./db.js";
 import { SubprocessRunner } from "./worker.js";
@@ -14,6 +15,7 @@ const dataDir = resolve(env.GATEWAY_DATA_DIR ?? resolve(root, "artifacts/gateway
 const portalOrigin = env.GATEWAY_PORTAL_ORIGIN ?? "http://127.0.0.1:4174";
 const engine = (env.GATEWAY_ENGINE ?? "live") as "live" | "scripted";
 const publicBaseUrl = env.GATEWAY_PUBLIC_URL ?? `http://127.0.0.1:${port}`;
+const studioBaseUrl = env.GATEWAY_STUDIO_URL ?? "http://127.0.0.1:5173";
 
 mkdirSync(dataDir, { recursive: true });
 const db = openDatabase(resolve(dataDir, "gateway.sqlite"));
@@ -36,6 +38,9 @@ const browsers = new BrowserPool({
   onRecovered: (name, cdpUrl) => console.warn(`browser profile ${name}: no open tabs on ${cdpUrl}; opened about:blank to restore a usable context`),
   ...(env.GATEWAY_CDP_URL ? { fixedCdpUrl: env.GATEWAY_CDP_URL } : {})
 });
+const localProvider = new LocalBrowserProvider(browsers);
+const browserbaseProvider = new BrowserbaseProvider({ projectId: env.BROWSERBASE_PROJECT_ID });
+if (env.BROWSERBASE_API_KEY && env.BROWSERBASE_PROJECT_ID) await browserbaseProvider.sweepOrphans();
 
 if (engine === "live" && !env.TYPESAFE_API_KEY) {
   console.error("GATEWAY_ENGINE=live requires TYPESAFE_API_KEY in the environment (never in the repository). Set GATEWAY_ENGINE=scripted for an offline demo without a model.");
@@ -48,9 +53,12 @@ const { app, shutdown } = buildApp({
   runner,
   evidenceRoot: resolve(dataDir, "evidence"),
   cdpUrl: (tenantId) => browsers.cdpUrlFor(recorderProfile(tenantId)),
+  browserProviders: { local: localProvider, browserbase: browserbaseProvider },
+  browserbaseProvider,
   browserProfiles: () => browsers.profiles(),
   allowLoopback: env.GATEWAY_ALLOW_LOOPBACK !== "0",
   publicBaseUrl,
+  studioBaseUrl,
   logger: env.GATEWAY_LOG !== "0",
   selectEngine: (definition, input) =>
     engine === "live"

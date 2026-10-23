@@ -138,6 +138,38 @@ and stopping conditions. Do not build the broader framework or begin this experi
 The prototype used [Jev Ultrafast](https://github.com/browser-use/jev-ultrafast) as its browser decision engine.
 
 ## Run the app locally
+### MCP
+
+Published automations are exposed through streamable HTTP MCP at `http://127.0.0.1:4180/mcp`. Configure an MCP client without copying a secret into its config:
+
+```sh
+pixie mcp config --client-token-env GATEWAY_CLIENT_TOKEN
+pixie mcp call list_operations --args '{}'
+```
+
+`invoke` starts a run and returns its handle immediately; poll `get_run` for state, verification, and the accepted result. Runs awaiting sign-in return a Studio connections handoff URL. The API and MCP transports share the published-operation service and stored results.
+
+With the scripted local API running, exercise the end-to-end MCP flow using `scripts/e2e-mcp.sh`.
+
+### Versioned repository contracts
+
+Publishing also versions the output model, declared repository operation, and browser adapter independently.
+Compatible optional output additions increment the minor contract version; breaking output/input changes increment
+the major; implementation-only changes increment the adapter revision. Published contract records are immutable.
+
+```sh
+node apps/cli/bin/pixie.js models
+node apps/cli/bin/pixie.js repos
+node apps/cli/bin/pixie.js ops [repository]
+node apps/cli/bin/pixie.js diff <automation-id>
+node apps/cli/bin/pixie.js invoke --repo <repository> --method get --version 1 \
+  --account acct_demo --input '{"memberId":"DEMO-1001"}' --follow
+```
+
+Repository REST calls pin a major with `Pixie-Contract-Version` or `?version=<major>`. MCP `invoke` accepts
+`repository`, `method`, and `version` in place of `automationId`. Exercise v1, compatible, and breaking changes
+through the CLI with `scripts/e2e-contracts.sh`.
+
 
 Requires Node.js 24 (the workspace requires Node.js 22.13 or newer), Python 3, `uv`, and local Chrome.
 
@@ -194,6 +226,7 @@ node apps/cli/bin/pixie.js invoke <automation-id> \
   --account acct_demo --input '{"memberId":"DEMO-1002"}' \
   --idempotency-key demo-member-1002 --follow
 node apps/cli/bin/pixie.js runs --automation <automation-id>
+node apps/cli/bin/pixie.js spend
 ```
 
 Use `--json` on API commands for JSON output. `pixie record <automation-id>`
@@ -208,3 +241,58 @@ node apps/cli/bin/pixie.js dev --scripted --portal
 The CLI does not drive the recording browser. `pixie keys create` displays a
 newly created token once; store it securely. Existing tokens and provider keys
 are never printed.
+
+Live worker requests are capped at 40 provider calls per run by default.
+Set `PIXIE_MAX_PROVIDER_CALLS` before starting the API to choose a lower cap;
+the worker counts retries before each request. `pixie spend` and Studio's Runs
+tab show the local ledger and estimated input-token cost for terminal runs with
+provider calls.
+
+### Browserbase persistent connections
+
+Create a Browserbase-backed account with the same developer API used by Studio:
+
+```sh
+node apps/cli/bin/pixie.js accounts add \
+  --name "Member portal" --origin https://portal.example.test \
+  --provider browserbase --id acct_portal
+node apps/cli/bin/pixie.js connections
+node apps/cli/bin/pixie.js connect acct_portal --env production
+```
+
+`pixie connect` prints a Studio handoff link and waits while the developer logs
+in through Pixie's streamed frame and input relay. Select **Resume** in Studio
+after login; Pixie closes the handoff session, waits for context synchronization,
+and verifies the saved session before marking it connected. Disconnect deletes
+the saved context where possible. If deletion fails, Studio reports the context
+as orphaned. Client keys cannot access these developer-only routes.
+
+The Browserbase Contexts guide and API references document that contexts can
+retain cookies, local storage, and IndexedDB; session creation must request
+`browserSettings.context: { id, persist: true }`; `keepAlive`, `timeout`, and
+`userMetadata` are session options; `connectUrl` is used to attach over CDP;
+`REQUEST_RELEASE` ends a session; running sessions can be listed with
+`status=RUNNING`; and contexts can be deleted. Pixie sends a bounded session
+timeout and Pixie metadata, never stores or returns the provider connection URL,
+and rechecks the session status after requesting release. These are
+documentation-confirmed behaviors, not a statement about Browserbase pricing.
+
+**Observed smoke result:** the capped live run navigated to the httpbin cookie
+setter, released session `94723018…` after 1 second, waited 5 seconds for
+synchronization, then found `pixie_probe=1` in session `9bda4827…` and released
+it after 1 second. The final tagged-running-session count was zero and the
+context was deleted. The redacted output is at
+`/home/ubuntu/evidence/browserbase-smoke.txt`. This is an observation from this
+run, not a guarantee about all Browserbase sessions. To repeat the smoke
+against `https://httpbin.org` (never the local synthetic portal), set the
+existing project's `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID` in the
+environment, then run:
+
+```sh
+node scripts/browserbase-smoke.mjs
+```
+
+The script caps each session at 300 seconds, the total at 600 session-seconds,
+and the session count at three; it always attempts release and context cleanup.
+Provider usage is recorded as Browserbase session seconds/minutes, not estimated
+dollars because plan pricing has not been verified.

@@ -11,6 +11,7 @@ interface RequestRecord {
   url: string;
   auth: string | undefined;
   idempotencyKey: string | undefined;
+  contractVersion: string | undefined;
   body: unknown;
 }
 
@@ -42,6 +43,7 @@ async function withApi(run: (baseUrl: string, requests: RequestRecord[]) => Prom
   const requests: RequestRecord[] = [];
   let testPolls = 0;
   let publicRunCreated = false;
+  let connectionPolls = 0;
   const server = createServer((req, res) => {
     const chunks: Buffer[] = [];
     req.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -60,6 +62,7 @@ async function withApi(run: (baseUrl: string, requests: RequestRecord[]) => Prom
         url: req.url ?? "/",
         auth: req.headers.authorization,
         idempotencyKey: req.headers["idempotency-key"] as string | undefined,
+        contractVersion: req.headers["pixie-contract-version"] as string | undefined,
         body
       };
       requests.push(record);
@@ -69,6 +72,18 @@ async function withApi(run: (baseUrl: string, requests: RequestRecord[]) => Prom
       };
       const url = new URL(record.url, "http://127.0.0.1");
       const path = url.pathname;
+      if (path === "/mcp") {
+        const rpc = record.body as { method?: string; id?: string | number; params?: { protocolVersion?: string } };
+        if (rpc?.method === "notifications/initialized") {
+          res.writeHead(202, { "mcp-session-id": "stub-session" });
+          return res.end();
+        }
+        res.writeHead(200, { "content-type": "application/json", "mcp-session-id": "stub-session" });
+        res.end(JSON.stringify(rpc?.method === "tools/call"
+          ? { jsonrpc: "2.0", id: rpc.id, result: { content: [{ type: "text", text: "{\"runId\":\"run-1\"}" }] } }
+          : { jsonrpc: "2.0", id: rpc?.id, result: { protocolVersion: rpc?.params?.protocolVersion ?? "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "stub", version: "1" } } }));
+        return;
+      }
 
       if (path.startsWith("/studio/") && record.auth === "Bearer client-test-token") {
         return send(403, { error: "forbidden: developer key required" });
@@ -77,6 +92,14 @@ async function withApi(run: (baseUrl: string, requests: RequestRecord[]) => Prom
         return send(200, [{ id: "acct_demo", name: "Demo", portalOrigin: "http://127.0.0.1:4174" }]);
       }
       if (path === "/studio/accounts" && record.method === "POST") return send(201, { id: "acct-created" });
+      if (path === "/studio/connections" && record.method === "GET") return send(200, [{ id: "connection-1", accountId: "acct_demo", accountName: "Demo", environment: "production", state: "connected" }]);
+      if (path === "/studio/connections" && record.method === "POST") return send(201, { id: "connection-1", accountId: "acct_demo", environment: "production", state: "disconnected" });
+      if (path === "/studio/connections/connection-1/connect" && record.method === "POST") return send(201, { id: "connection-1", state: "connecting" });
+      if (path === "/studio/connections/connection-1" && record.method === "GET") {
+        connectionPolls += 1;
+        return send(200, { id: "connection-1", state: connectionPolls > 1 ? "connected" : "connecting" });
+      }
+      if (path === "/studio/connections/connection-1/disconnect" && record.method === "POST") return send(200, { id: "connection-1", state: "disconnected", contextCleanup: "deleted" });
       if (path === "/studio/accounts/acct-demo/secrets" && record.method === "PUT") return send(200, { stored: ["ref"] });
       if (path === "/studio/automations" && record.method === "GET") return send(200, [automation]);
       if (path === "/studio/automations" && record.method === "POST") {
@@ -114,7 +137,7 @@ async function withApi(run: (baseUrl: string, requests: RequestRecord[]) => Prom
             id: "test-run-1",
             automationId: "auto-1",
             state: testPolls === 1 ? "running" : "completed",
-            metrics: { engine: "scripted (offline)", modelCalls: 3, actions: 4, elapsedMs: 12 }
+            metrics: { engine: "scripted (offline)", modelCalls: 3, providerCalls: 0, estimatedCostUsd: 0, actions: 4, elapsedMs: 12 }
           },
           verification,
           data: { memberId: "DEMO-1001" },
@@ -133,6 +156,14 @@ async function withApi(run: (baseUrl: string, requests: RequestRecord[]) => Prom
       if (path === "/studio/automations/auto-1/publish" && record.method === "POST") {
         return send(201, { automationId: "auto-1", revision: 1, checksum: "published-checksum", openapiUrl: "http://127.0.0.1:4180/v1/automations/auto-1/openapi.json" });
       }
+      if (path === "/studio/models" && record.method === "GET") return send(200, [{ name: "repo.get.output", major: 1, minor: 0, identityFields: ["memberId"] }]);
+      if (path === "/studio/repositories" && record.method === "GET") return send(200, [{ name: "repo", operationCount: 1 }]);
+      if (path === "/studio/operations" && record.method === "GET") return send(200, [{ repository: "repo", method: "get", version: "1.0", adapterRevision: 1 }]);
+      if (path === "/studio/automations/auto-1/contract" && record.method === "GET") return send(200, {
+        repository: "repo", method: "get", compatibility: { level: "minor", changes: [{ path: "outputs.note", kind: "optional_added" }] },
+        current: { major: 1, minor: 0, adapterRevision: 1 }, next: { major: 1, minor: 1, adapterRevision: 1 }
+      });
+      if (path === "/studio/operations/op-1/retire" && record.method === "POST") return send(200, { operation: { repository: "repo", method: "get", version: "1.0" }, bindings: [{ major: 1 }] });
       if (path === "/studio/automations/auto-unready/publish" && record.method === "POST") {
         return send(409, { error: "only automations in state 'ready' can be published" });
       }
@@ -142,6 +173,12 @@ async function withApi(run: (baseUrl: string, requests: RequestRecord[]) => Prom
       if (path === "/studio/api-keys" && record.method === "POST") return send(201, { id: "key-1", token: "newly-created-token" });
       if (path === "/studio/runs" && record.method === "GET") {
         return send(200, [{ id: "test-run-1", automationId: "auto-1", state: "completed", kind: "test", revision: 0 }]);
+      }
+      if (path === "/studio/spend" && record.method === "GET") {
+        return send(200, {
+          rows: [{ runId: "live-run-1", at: "2026-09-25T12:00:00.000Z", providerCalls: 2, inputTokens: 25000, estimatedCostUsd: 0.00105 }],
+          total: { providerCalls: 2, inputTokens: 25000, estimatedCostUsd: 0.00105 }
+        });
       }
       if (path === "/studio/runs/unknown-run" && record.method === "GET") return send(404, { error: "not found" });
       if (path === "/studio/runs/test-run-1/cancel" && record.method === "POST") return send(202, { ok: true });
@@ -158,12 +195,15 @@ async function withApi(run: (baseUrl: string, requests: RequestRecord[]) => Prom
           id: "public-run-1",
           automationId: "auto-1",
           state: "completed",
-          metrics: { engine: "scripted", modelCalls: 3, actions: 4, elapsedMs: 12 }
+          metrics: { engine: "scripted", modelCalls: 3, providerCalls: 0, estimatedCostUsd: 0, actions: 4, elapsedMs: 12 }
         });
       }
       if (path === "/v1/automations/auto-1/runs/public-run-1/result" && record.method === "GET") {
         return send(200, { runId: "public-run-1", automationId: "auto-1", accepted: true, data: { memberId: "DEMO-1002" }, checks: verification.checks, observedAt: "now" });
       }
+      if (path === "/v1/repositories/repo/operations/get/runs" && record.method === "POST") return send(202, { id: "contract-run", state: "queued" });
+      if (path === "/v1/repositories/repo/operations/get/runs/contract-run" && record.method === "GET") return send(200, { id: "contract-run", state: "completed" });
+      if (path === "/v1/repositories/repo/operations/get/runs/contract-run/result" && record.method === "GET") return send(200, { runId: "contract-run", accepted: true, data: {}, checks: verification.checks });
       return send(404, { error: "not found" });
     });
   });
@@ -211,6 +251,23 @@ test("pixie init uses local synthetic defaults, never writes credentials, and re
   assert.equal(loadProject(dir).accountId, "acct_mine", "existing pixie.json untouched");
   assert.ok(lines.some((line) => line.includes("refusing")));
   assert.equal(readFileSync(resolve(dir, ".env.example"), "utf8").includes("TYPESAFE_API_KEY="), true);
+});
+
+test("MCP CLI config uses an environment reference and call sends the client token", async () => {
+  await withApi(async (baseUrl, requests) => {
+    const config = capture();
+    assert.equal(await main(["mcp", "config", "--client-token-env", "PIXIE_CLIENT"], config.out), 0);
+    assert.match(config.lines.join("\n"), new RegExp(`${baseUrl.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/mcp`));
+    assert.match(config.lines.join("\n"), /\$\{PIXIE_CLIENT\}/);
+    assert.doesNotMatch(config.lines.join("\n"), /client-config-token|client-test-token/);
+    const called = capture();
+    assert.equal(await main(["mcp", "call", "list_operations", "--args", "{}"], called.out), 0);
+    assert.match(called.lines[0] ?? "", /runId/);
+    const mcpRequests = requests.filter((request) => request.url === "/mcp");
+    assert.ok(mcpRequests.length >= 3);
+    assert.ok(mcpRequests.some((request) => (request.body as { method?: string })?.method === "tools/call"));
+    assert.ok(mcpRequests.every((request) => request.auth === "Bearer client-test-token"));
+  });
 });
 
 test("pixie doctor reports a missing live model variable and unreachable services", async () => {
@@ -280,6 +337,7 @@ test("Studio commands use the developer token, JSON output is API JSON, and unsa
       ["test", "auto-1", "--follow", "--json"],
       ["publish", "auto-1", "--json"],
       ["runs", "--automation", "auto-1", "--json"],
+      ["spend", "--json"],
       ["run", "test-run-1", "--events", "--json"],
       ["cancel", "test-run-1", "--json"],
       ["openapi", "auto-1", "--json"],
@@ -323,8 +381,27 @@ test("test --follow reports state, verification, and API-labelled scripted decis
     assert.ok(lines.some((line) => line === "state: completed"));
     assert.ok(lines.some((line) => line.includes("verification: accepted (16/16 checks passed)")));
     assert.ok(lines.some((line) => line.includes("scripted decisions=3")));
+    assert.ok(lines.some((line) => line.includes("providerCalls=0 estimatedCostUsd=$0.000000")));
     const start = requests.find((request) => request.url === "/studio/automations/auto-1/test")!;
     assert.deepEqual(start.body, { accountId: "acct_demo", input: { memberId: "DEMO-1001" } });
+  });
+});
+
+test("spend prints the API ledger and preserves raw JSON output", async () => {
+  await withApi(async (_baseUrl, requests) => {
+    const { lines, out } = capture();
+    assert.equal(await main(["spend"], out), 0);
+    assert.ok(lines.some((line) => line.includes("total estimated spend: $0.001050 (2 provider calls, 25000 input tokens)")));
+    assert.ok(lines.some((line) => line.includes("run=live-run-1") && line.includes("estimatedCostUsd=$0.001050")));
+
+    const json = capture();
+    assert.equal(await main(["--json", "spend"], json.out), 0);
+    assert.deepEqual(JSON.parse(json.lines[0]!), {
+      rows: [{ runId: "live-run-1", at: "2026-09-25T12:00:00.000Z", providerCalls: 2, inputTokens: 25000, estimatedCostUsd: 0.00105 }],
+      total: { providerCalls: 2, inputTokens: 25000, estimatedCostUsd: 0.00105 }
+    });
+    const request = requests.find((item) => item.url === "/studio/spend")!;
+    assert.equal(request.auth, "Bearer dev-test-token");
   });
 });
 
@@ -406,5 +483,53 @@ test("client token can come from project config, and human key output reveals on
     assert.equal(await main(["keys", "create", "one-time", "--role", "developer"], key.out), 0);
     assert.equal(key.lines.join("\n").split("newly-created-token").length - 1, 1);
     assert.ok(key.lines.some((line) => line.includes("shown once")));
+  });
+});
+
+test("Browserbase account, connection, connect handoff, and disconnect commands use the Studio API", async () => {
+  await withApi(async (_baseUrl, requests) => {
+    const account = capture();
+    assert.equal(await main(["accounts", "add", "--name", "Hosted", "--origin", "https://portal.example.test", "--provider", "browserbase", "--environment", "production"], account.out), 0);
+    const addRequest = requests.find((request) => request.method === "POST" && request.url === "/studio/accounts");
+    assert.deepEqual(addRequest?.body, {
+      name: "Hosted", portalOrigin: "https://portal.example.test", provider: "browserbase", environment: "production"
+    });
+
+    const list = capture();
+    assert.equal(await main(["connections"], list.out), 0);
+    assert.ok(list.lines.some((line) => line.includes("connection-1") && line.includes("production")));
+
+    const connect = capture();
+    assert.equal(await main(["connect", "acct_demo", "--env", "production"], connect.out), 0);
+    assert.ok(connect.lines.some((line) => line.includes("/#/connections/connection-1")));
+    assert.equal(connect.lines.at(-1), "connected");
+    const created = requests.find((request) => request.method === "POST" && request.url === "/studio/connections");
+    assert.deepEqual(created?.body, { accountId: "acct_demo", environment: "production" });
+
+    const disconnect = capture();
+    assert.equal(await main(["disconnect", "connection-1"], disconnect.out), 0);
+    assert.ok(disconnect.lines[0]?.includes("context cleanup"));
+    assert.ok(requests.some((request) => request.method === "POST" && request.url === "/studio/connections/connection-1/disconnect"));
+
+    const json = capture();
+    assert.equal(await main(["--json", "connections"], json.out), 0);
+    assert.deepEqual(JSON.parse(json.lines[0]!), [{ id: "connection-1", accountId: "acct_demo", accountName: "Demo", environment: "production", state: "connected" }]);
+  });
+});
+
+test("contract listing, diff, retirement, and repository invocation commands use the shared APIs", async () => {
+  await withApi(async (_baseUrl, requests) => {
+    for (const args of [["models"], ["repos"], ["ops"], ["ops", "repo"], ["diff", "auto-1"], ["retire", "op-1"]] as string[][]) {
+      const result = capture();
+      assert.equal(await main(args, result.out), 0, args.join(" "));
+      assert.ok(result.lines.length > 0);
+    }
+    const invoked = capture();
+    assert.equal(await main([
+      "invoke", "--repo", "repo", "--method", "get", "--version", "1", "--input", "{\"memberId\":\"DEMO-1001\"}", "--follow"
+    ], invoked.out), 0);
+    assert.ok(invoked.lines.some((line) => line.includes("contract-run")));
+    const request = requests.find((item) => item.method === "POST" && item.url === "/v1/repositories/repo/operations/get/runs");
+    assert.equal(request?.contractVersion, "1");
   });
 });

@@ -11,6 +11,7 @@ export const INPUT_FIELD_TYPES: readonly FieldType[] = ["string", "number", "boo
 /** `read` automations never change site state; `write` automations declare checkpoint mutations that are verified. */
 export type Effect = "read" | "write";
 export type ActionEffect = "click" | "type" | "select" | "navigate";
+export type AdapterGenerator = "template" | "recorded" | "manual";
 
 /** Where an input value comes from at run time. Secret references are resolved server-side; values are never stored in definitions. */
 export type InputSource = { kind: "caller" } | { kind: "accountSecret"; secretRef: string };
@@ -130,6 +131,11 @@ export interface AutomationDefinition {
   schemaVersion: typeof SCHEMA_VERSION;
   id: string;
   name: string;
+  repository?: string;
+  method?: string;
+  /** Stable output fields or list-item text paths, such as `tasks.text`. */
+  keyFields?: string[];
+  adapterGenerator?: AdapterGenerator;
   engine: typeof ENGINE;
   engineRevision: string;
   startUrl: string;

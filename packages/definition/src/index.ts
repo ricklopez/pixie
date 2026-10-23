@@ -1,5 +1,6 @@
 export * from "./types.js";
 export * from "./canonical.js";
+export * from "./compatibility.js";
 export * from "./validate.js";
 export * from "./verify.js";
 export * from "./suggest.js";

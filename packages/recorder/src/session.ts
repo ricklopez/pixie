@@ -134,6 +134,34 @@ export class RecordingSession {
     };
   }
 
+  async hasAuthRequiredSignal(signals: unknown[]): Promise<boolean> {
+    if (!this.page || this.page.isClosed()) throw new Error("handoff verification page is unavailable");
+    const body = normalized(await this.page.locator("body").innerText().catch(() => ""));
+    const url = this.page.url();
+    for (const value of signals) {
+      if (!value || typeof value !== "object") return true;
+      const signal = value as Record<string, unknown>;
+      if (signal.kind === "urlMatches" && typeof signal.pattern === "string") {
+        try {
+          if (new RegExp(signal.pattern).test(url)) return true;
+        } catch {
+          return true;
+        }
+      } else if ((signal.kind === "textPresent" && typeof signal.text === "string" && body.includes(normalized(signal.text)))
+        || (signal.kind === "labelPresent" && typeof signal.label === "string" && body.includes(normalized(signal.label)))) {
+        return true;
+      } else if (signal.kind === "fieldVisible" && typeof signal.label === "string") {
+        if (await this.page.getByLabel(signal.label, { exact: false }).isVisible().catch(() => false)) return true;
+      } else if (signal.kind === "fieldValue" && typeof signal.label === "string" && typeof signal.text === "string") {
+        const field = this.page.getByLabel(signal.label, { exact: false }).first();
+        if (await field.inputValue().then((value) => normalized(value) === normalized(signal.text as string)).catch(() => false)) return true;
+      } else if (signal.kind === "itemPresent" || signal.kind === "itemAbsent") {
+        return true;
+      }
+    }
+    return false;
+  }
+
   frame(): Buffer | null {
     return this.latestFrame;
   }
@@ -186,4 +214,8 @@ export class RecordingSession {
     }
     return { ...this.status(), events: this.events };
   }
+}
+
+function normalized(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, " ").trim();
 }

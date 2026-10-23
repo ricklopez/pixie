@@ -13,6 +13,8 @@ import {
 } from "@gateway/definition";
 import { now, type RunRow, type RunState } from "./db.js";
 import type { FinishedEvent, WorkerCommand, WorkerEvent, WorkerRunner } from "./worker.js";
+import type { BrowserProvider } from "./browser-provider.js";
+import { parseSessionCap, sessionLedgerId } from "./browser-provider.js";
 
 export type EngineSelection = Pick<WorkerCommand, "engine" | "script">;
 
@@ -22,6 +24,7 @@ export interface RunManagerOptions {
   evidenceRoot: string;
   /** Chooses the engine per run. Production uses live; offline tests use the scripted substitute and say so in metadata. */
   selectEngine: (definition: AutomationDefinition, input: Record<string, string | number | boolean>) => EngineSelection;
+  browserProviders?: Partial<Record<"local" | "browserbase", BrowserProvider>>;
 }
 
 export interface CreateRunParams {
@@ -33,6 +36,8 @@ export interface CreateRunParams {
   callerId: string;
   kind: "test" | "endpoint";
   input: unknown;
+  operationVersionId?: string | null;
+  adapterRevisionId?: string | null;
   idempotencyKey?: string | null;
 }
 
@@ -44,13 +49,20 @@ export interface RunMetrics {
   engine: string;
   engineRevision: string;
   modelCalls: number;
+  providerCalls: number;
+  estimatedCostUsd: number;
   actions: number;
   elapsedMs: number;
   modelLatencyMs: number[];
   inputTokens: number;
   outputTokens: number;
   policyRejections: number;
+  browserSessionSeconds: number;
+  connectionId?: string;
 }
+
+const INPUT_TOKEN_PRICE_USD_PER_MILLION = 0.042; // https://docs.typesafe.ai/models
+const estimatedCost = (inputTokens: number) => Number(((inputTokens * INPUT_TOKEN_PRICE_USD_PER_MILLION) / 1_000_000).toFixed(6));
 
 const TERMINAL: RunState[] = ["completed", "needs_review", "awaiting_auth", "failed", "cancelled"];
 export const isTerminal = (state: RunState) => TERMINAL.includes(state);
@@ -108,7 +120,10 @@ export class RunManager {
       tenant_id: params.tenantId,
       automation_id: params.automationId,
       revision: params.revision,
+      operation_version_id: params.operationVersionId ?? null,
+      adapter_revision_id: params.adapterRevisionId ?? null,
       account_id: params.accountId,
+      connection_id: null,
       caller_id: params.callerId,
       kind: params.kind,
       state: "queued",
@@ -124,10 +139,10 @@ export class RunManager {
     };
     this.db
       .prepare(
-        `INSERT INTO runs (id, tenant_id, automation_id, revision, account_id, caller_id, kind, state, input, idempotency_key, request_hash, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO runs (id, tenant_id, automation_id, revision, operation_version_id, adapter_revision_id, account_id, connection_id, caller_id, kind, state, input, idempotency_key, request_hash, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(run.id, run.tenant_id, run.automation_id, run.revision, run.account_id, run.caller_id, run.kind, run.state, run.input, run.idempotency_key, run.request_hash, run.created_at);
+      .run(run.id, run.tenant_id, run.automation_id, run.revision, run.operation_version_id, run.adapter_revision_id, run.account_id, run.connection_id, run.caller_id, run.kind, run.state, run.input, run.idempotency_key, run.request_hash, run.created_at);
     this.recordEvent(run.id, { type: "queued", position: (this.queues.get(run.account_id)?.length ?? 0) + (this.active.has(run.account_id) ? 1 : 0) });
     this.enqueue(run.account_id, run.id, params.definition);
     return { ok: true, run, reused: false };
@@ -239,22 +254,61 @@ export class RunManager {
       engine: selection.engine === "live" ? `${definition.engine}@${definition.engineRevision.slice(0, 12)}` : `${selection.engine} (offline substitute, not a model)`,
       engineRevision: definition.engineRevision,
       modelCalls: 0,
+      providerCalls: 0,
+      estimatedCostUsd: 0,
       actions: 0,
       elapsedMs: 0,
       modelLatencyMs: [],
       inputTokens: 0,
       outputTokens: 0,
-      policyRejections: 0
+      policyRejections: 0,
+      browserSessionSeconds: 0
     };
+    const account = this.db.prepare(`SELECT provider, environment FROM accounts WHERE id = ?`).get(run.account_id) as { provider: string; environment: string } | undefined;
+    let cdpUrlOverride: string | undefined;
+    let sessionLease: Awaited<ReturnType<BrowserProvider["acquireSession"]>> | undefined;
+    if (account?.provider === "browserbase") {
+      const connection = this.db.prepare(`SELECT id, context_id, state FROM connections WHERE account_id = ? AND environment = ?`)
+        .get(run.account_id, account.environment) as { id: string; context_id: string | null; state: string } | undefined;
+      if (!connection?.context_id || connection.state !== "connected") {
+        this.finish(runId, "awaiting_auth", { reason: "browserbase connection requires authentication", ...(connection ? { connectionId: connection.id } : {}) }, metrics);
+        return;
+      }
+      const provider = this.options.browserProviders?.browserbase;
+      if (!provider) {
+        this.finish(runId, "failed", { reason: "browserbase provider is unavailable" }, metrics);
+        return;
+      }
+      try {
+        sessionLease = await provider.acquireSession({
+          accountId: run.account_id,
+          environment: account.environment,
+          contextId: connection.context_id,
+          timeoutSeconds: parseSessionCap(),
+          queueTimeoutMs: definition.limits.deadlineMs,
+          runId
+        });
+        cdpUrlOverride = sessionLease.cdpUrl;
+        run.connection_id = connection.id;
+        this.db.prepare(`UPDATE runs SET connection_id = ? WHERE id = ?`).run(connection.id, runId);
+        metrics.connectionId = connection.id;
+      } catch {
+        this.finish(runId, "failed", { reason: "browserbase session could not be acquired" }, metrics);
+        return;
+      }
+    }
     let extraction: Extract<WorkerEvent, { type: "extraction" }> | null = null;
 
-    const handle = this.options.runner.start(command, (event) => {
+    let handle: ReturnType<WorkerRunner["start"]>;
+    try {
+      handle = this.options.runner.start(command, (event) => {
       if (event.type === "model_call") {
         metrics.modelCalls += 1;
         if (typeof event.latencyMs === "number") metrics.modelLatencyMs.push(event.latencyMs);
         metrics.inputTokens += event.usage?.input_tokens ?? 0;
         metrics.outputTokens += event.usage?.output_tokens ?? 0;
       }
+      if (event.type === "provider_call") metrics.providerCalls += 1;
       if (event.type === "action") metrics.actions += 1;
       if (event.type === "policy_rejected") metrics.policyRejections += 1;
       if (event.type === "screenshot") {
@@ -262,20 +316,55 @@ export class RunManager {
           .prepare(`INSERT OR REPLACE INTO evidence (run_id, name, path, content_type) VALUES (?, ?, ?, ?)`)
           .run(runId, event.ref, join(command.evidenceDir, event.ref), "image/jpeg");
       }
-      if (event.type === "extraction") extraction = event;
-      if (event.type !== "finished") this.recordEvent(runId, event as unknown as Record<string, unknown>);
-    });
+      if (event.type === "extraction") extraction = redactBrowserUrl(event, cdpUrlOverride);
+      if (event.type !== "finished") this.recordEvent(runId, redactBrowserUrl(event, cdpUrlOverride) as Record<string, unknown>);
+      }, cdpUrlOverride);
+    } catch {
+      if (sessionLease) {
+        metrics.browserSessionSeconds = Math.max(0, Math.ceil((Date.now() - sessionLease.startedAt) / 1000));
+        await sessionLease.release().catch(() => 0);
+        this.db.prepare(`INSERT INTO browser_session_ledger (id, run_id, connection_id, purpose, at, session_seconds) VALUES (?, ?, ?, 'run', ?, ?)`)
+          .run(sessionLedgerId(), runId, run.connection_id, now(), metrics.browserSessionSeconds);
+      }
+      this.finish(runId, "failed", { reason: "worker could not start" }, metrics);
+      return;
+    }
     active.handle = handle;
     if (active.cancelRequested) handle.cancel();
 
     const hardStop = setTimeout(() => handle.cancel(), definition.limits.deadlineMs + 15_000);
     hardStop.unref();
-    const finished: FinishedEvent = await handle.finished;
+    let finished: FinishedEvent;
+    try {
+      finished = await handle.finished;
+    } catch {
+      clearTimeout(hardStop);
+      if (sessionLease) {
+        metrics.browserSessionSeconds = Math.max(0, Math.ceil((Date.now() - sessionLease.startedAt) / 1000));
+        await sessionLease.release().catch(() => 0);
+        this.db.prepare(`INSERT INTO browser_session_ledger (id, run_id, connection_id, purpose, at, session_seconds) VALUES (?, ?, ?, 'run', ?, ?)`)
+          .run(sessionLedgerId(), runId, run.connection_id, now(), metrics.browserSessionSeconds);
+      }
+      this.finish(runId, "failed", { reason: "worker failed before reporting a terminal state" }, metrics);
+      return;
+    }
     clearTimeout(hardStop);
-    metrics.elapsedMs = finished.elapsedMs;
-    this.recordEvent(runId, { ...finished });
+    if (sessionLease) {
+      try {
+        metrics.browserSessionSeconds = await sessionLease.release();
+      } catch {
+        metrics.browserSessionSeconds = Math.max(0, Math.ceil((Date.now() - sessionLease.startedAt) / 1000));
+      }
+      this.db.prepare(`INSERT INTO browser_session_ledger (id, run_id, connection_id, purpose, at, session_seconds) VALUES (?, ?, ?, 'run', ?, ?)`)
+        .run(sessionLedgerId(), runId, run.connection_id, now(), metrics.browserSessionSeconds);
+    }
+    const safeFinished = redactBrowserUrl(finished, cdpUrlOverride);
+    metrics.elapsedMs = safeFinished.elapsedMs;
+    metrics.providerCalls = Math.max(metrics.providerCalls, safeFinished.providerCalls ?? 0);
+    metrics.estimatedCostUsd = estimatedCost(metrics.inputTokens);
+    this.recordEvent(runId, { ...safeFinished });
 
-    switch (finished.outcome) {
+    switch (safeFinished.outcome) {
       case "extracted": {
         this.setState(runId, "verifying");
         const observed = extraction as Extract<WorkerEvent, { type: "extraction" }> | null;
@@ -294,16 +383,17 @@ export class RunManager {
         return;
       }
       case "auth_required":
-        this.finish(runId, "awaiting_auth", { reason: finished.reason ?? "login required" }, metrics);
+        if (run.connection_id) this.db.prepare(`UPDATE connections SET state = 'auth_required' WHERE id = ?`).run(run.connection_id);
+        this.finish(runId, "awaiting_auth", { reason: safeFinished.reason ?? "login required", ...(run.connection_id ? { connectionId: run.connection_id } : {}) }, metrics);
         return;
       case "blocked":
-        this.finish(runId, "needs_review", { reason: finished.reason ?? "checkpoint not satisfied" }, metrics);
+        this.finish(runId, "needs_review", { reason: safeFinished.reason ?? "checkpoint not satisfied" }, metrics);
         return;
       case "cancelled":
-        this.finish(runId, "cancelled", { reason: finished.reason ?? "cancelled" }, metrics);
+        this.finish(runId, "cancelled", { reason: safeFinished.reason ?? "cancelled" }, metrics);
         return;
       default:
-        this.finish(runId, "failed", { reason: finished.reason ?? "worker failure" }, metrics);
+        this.finish(runId, "failed", { reason: safeFinished.reason ?? "worker failure" }, metrics);
     }
   }
 
@@ -314,9 +404,31 @@ export class RunManager {
   }
 
   private finish(runId: string, state: RunState, failure: Record<string, unknown> | null, metrics: RunMetrics | null, result: Record<string, unknown> | null = null) {
+    const finishedAt = now();
+    const priorEvents = isTerminal(state)
+      ? (this.db.prepare(`SELECT event FROM run_events WHERE run_id = ?`).all(runId) as { event: string }[]).map((row) => JSON.parse(row.event) as Record<string, unknown>)
+      : [];
+    const providerCallsFromEvents = priorEvents.filter((event) => event.type === "provider_call").length;
+    const inputTokensFromEvents = priorEvents.reduce((sum, event) => {
+      if (event.type !== "model_call" || typeof event.usage !== "object" || event.usage === null) return sum;
+      return sum + (Number((event.usage as Record<string, unknown>).input_tokens) || 0);
+    }, 0);
+    const providerCalls = Math.max(metrics?.providerCalls ?? 0, providerCallsFromEvents);
+    const inputTokens = metrics?.inputTokens ?? inputTokensFromEvents;
+    if (metrics) {
+      metrics.providerCalls = providerCalls;
+      metrics.estimatedCostUsd = estimatedCost(metrics.inputTokens);
+    }
     this.db
       .prepare(`UPDATE runs SET state = ?, failure = ?, metrics = ?, result = ?, finished_at = ? WHERE id = ?`)
-      .run(state, failure ? JSON.stringify(failure) : null, metrics ? JSON.stringify(metrics) : null, result ? JSON.stringify(result) : null, now(), runId);
+      .run(state, failure ? JSON.stringify(failure) : null, metrics ? JSON.stringify(metrics) : null, result ? JSON.stringify(result) : null, finishedAt, runId);
+    if (isTerminal(state) && (providerCalls > 0 || (metrics?.browserSessionSeconds ?? 0) > 0)) {
+      this.db
+        .prepare(`INSERT OR IGNORE INTO spend_ledger (run_id, at, provider_calls, input_tokens, estimated_cost_usd, browser_session_seconds) VALUES (?, ?, ?, ?, ?, ?)`)
+        .run(runId, finishedAt, providerCalls, inputTokens, estimatedCost(inputTokens), metrics?.browserSessionSeconds ?? 0);
+    } else if (isTerminal(state) && (metrics?.browserSessionSeconds ?? 0) > 0) {
+      this.db.prepare(`UPDATE spend_ledger SET browser_session_seconds = ? WHERE run_id = ?`).run(metrics!.browserSessionSeconds, runId);
+    }
     this.recordEvent(runId, { type: "state", state, ...(failure ?? {}) });
     for (const waiter of this.waiters.get(runId) ?? []) waiter();
   }
@@ -325,4 +437,14 @@ export class RunManager {
     const next = (this.db.prepare(`SELECT COALESCE(MAX(seq), 0) + 1 AS seq FROM run_events WHERE run_id = ?`).get(runId) as { seq: number }).seq;
     this.db.prepare(`INSERT INTO run_events (run_id, seq, at, event) VALUES (?, ?, ?, ?)`).run(runId, next, now(), JSON.stringify(event));
   }
+}
+
+function redactBrowserUrl<T>(value: T, cdpUrl: string | undefined): T {
+  if (!cdpUrl) return value;
+  if (typeof value === "string") return value.split(cdpUrl).join("[redacted browser connection]") as T;
+  if (Array.isArray(value)) return value.map((item) => redactBrowserUrl(item, cdpUrl)) as T;
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactBrowserUrl(item, cdpUrl)])) as T;
+  }
+  return value;
 }
