@@ -1,0 +1,32 @@
+name: Experiment 001 offline
+
+on:
+  push:
+    paths:
+      - "experiments/001-todo/**"
+      - ".github/workflows/experiment-001.yml"
+  pull_request:
+    paths:
+      - "experiments/001-todo/**"
+      - ".github/workflows/experiment-001.yml"
+
+jobs:
+  local-offline-experiment:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: experiments/001-todo
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: experiments/001-todo/package-lock.json
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run generate
+      - run: git diff --exit-code -- experiments/001-todo/capture/traces experiments/001-todo/generated/baseline
+        working-directory: .
+      - run: npm test
+      - run: npm run typecheck
