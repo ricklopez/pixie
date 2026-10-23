@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { hackerNewsFrontPageDefinition } from "@gateway/definition";
 import { generateAdapter } from "../src/index.js";
 
 const definition = {
@@ -43,4 +44,12 @@ test("missing output locators are reported instead of producing a partial adapte
   const generated = generateAdapter(recording, { ...definition, outputs: [] } as never);
   assert.equal(generated.source, "");
   assert.equal(generated.unsupported[0]?.kind, "output");
+});
+
+test("a zero-action recording generates an extraction adapter with reviewed list fields", () => {
+  const generated = generateAdapter({ events: [] }, hackerNewsFrontPageDefinition());
+  assert.equal(generated.unsupported.length, 0);
+  assert.match(generated.source, /extractOutputs/);
+  assert.match(generated.source, /"fields"/);
+  assert.match(generated.source, /"id":\{"attribute":"id"\}/);
 });

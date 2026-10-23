@@ -41,7 +41,7 @@ const HELP = `pixie — local developer CLI for the Pixie gateway (runs from thi
   pixie accounts [list]           list accounts; use \`accounts add\` to configure one
   pixie accounts add --name <n> --origin <url> [--id <id>] [--provider local|browserbase] [--environment <env>]
   pixie accounts secret <id> --ref <name>
-  pixie create <name> --url <startUrl> [--template eligibility-overview|create-todo|list-todos|update-todo|delete-todo]
+  pixie create <name> --url <startUrl> [--template eligibility-overview|hn-front-page|create-todo|list-todos|update-todo|delete-todo]
       [--allowed-origin <origin>...]
   pixie show <automationId>       show an automation and its definition
   pixie record start <id> [--url] start recording in the API-owned browser
@@ -599,8 +599,8 @@ async function createAutomation(
   allowedOrigins: string[] | undefined,
   jsonMode: boolean
 ): Promise<number> {
-  if (template && template !== "eligibility-overview" && !(TODO_TEMPLATES as readonly string[]).includes(template)) {
-    out.error(`pixie create: unsupported template '${template}' (use eligibility-overview or ${TODO_TEMPLATES.join(", ")})`);
+  if (template && template !== "eligibility-overview" && template !== "hn-front-page" && !(TODO_TEMPLATES as readonly string[]).includes(template)) {
+    out.error(`pixie create: unsupported template '${template}' (use eligibility-overview, hn-front-page, or ${TODO_TEMPLATES.join(", ")})`);
     return 2;
   }
   const response = await studioRequest(project, "POST", "/studio/automations", {

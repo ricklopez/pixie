@@ -4,6 +4,7 @@ import type { AutomationDefinition, FieldType, JsonSchemaObject } from "./types.
 export interface ListItem {
   text: string;
   completed: boolean;
+  fields?: Record<string, string | null>;
 }
 
 /** Worker-side before/after DOM comparison of a declared write checkpoint. */
@@ -41,7 +42,11 @@ export interface VerificationResult {
 export type JsonValue = string | number | boolean | ListItem[];
 
 function isListItems(v: unknown): v is ListItem[] {
-  return Array.isArray(v) && v.every((i) => !!i && typeof i === "object" && typeof (i as ListItem).text === "string" && typeof (i as ListItem).completed === "boolean");
+  return Array.isArray(v) && v.every((i) => {
+    if (!i || typeof i !== "object" || typeof (i as ListItem).text !== "string" || typeof (i as ListItem).completed !== "boolean") return false;
+    const fields = (i as ListItem).fields;
+    return fields === undefined || (!!fields && typeof fields === "object" && !Array.isArray(fields) && Object.values(fields).every((value) => value === null || typeof value === "string"));
+  });
 }
 
 export function coerce(type: FieldType, raw: string | ListItem[]): JsonValue | null {
@@ -196,6 +201,28 @@ export function verifyExtraction(
         const detail = matches < 0 ? `${assertion.output} is not a list or ${assertion.input} is not text` : `${matches} item(s) equal input ${assertion.input}`;
         checks.push({ id, kind: assertion.kind, passed, detail });
         if (!passed) reasons.push(`${assertion.kind}: ${assertion.output} has ${detail}`);
+        break;
+      }
+      case "listMinItems": {
+        const list = data[assertion.output];
+        const count = isListItems(list) ? list.length : -1;
+        const passed = count >= assertion.min;
+        const detail = count < 0 ? `${assertion.output} is not a list` : `${count} item(s), minimum ${assertion.min}`;
+        checks.push({ id, kind: assertion.kind, passed, detail });
+        if (!passed) reasons.push(`${assertion.kind}: ${assertion.output} has ${detail}`);
+        break;
+      }
+      case "listUniqueField": {
+        const list = data[assertion.output];
+        const values = isListItems(list) ? list.map((item) => item.fields?.[assertion.field]) : null;
+        const passed = values !== null && values.every((value) => typeof value === "string") && new Set(values).size === values.length;
+        const detail = values === null
+          ? `${assertion.output} is not a list`
+          : values.some((value) => value === undefined || value === null)
+            ? `field '${assertion.field}' is missing from one or more items`
+            : `${values.length} item(s) have distinct '${assertion.field}' values`;
+        checks.push({ id, kind: assertion.kind, passed, detail });
+        if (!passed) reasons.push(`${assertion.kind}: ${assertion.output} ${detail}`);
         break;
       }
     }

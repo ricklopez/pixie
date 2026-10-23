@@ -50,6 +50,8 @@ export interface ListSpec {
   text: string;
   /** Optional CSS selector, relative to the item, that matches only when the item is marked completed. */
   completed?: string;
+  /** Additional reviewed values read from each item or a descendant. */
+  fields?: Record<string, { selector?: string; attribute?: string }>;
 }
 
 /**
@@ -120,7 +122,9 @@ export type Assertion =
   /** A list output contains exactly one item whose text equals the input. */
   | { kind: "listContainsInput"; output: string; input: string }
   /** A list output contains no item whose text equals the input. */
-  | { kind: "listExcludesInput"; output: string; input: string };
+  | { kind: "listExcludesInput"; output: string; input: string }
+  | { kind: "listMinItems"; output: string; min: number }
+  | { kind: "listUniqueField"; output: string; field: string };
 
 export interface Limits {
   maxActions: number;
@@ -133,7 +137,7 @@ export interface AutomationDefinition {
   name: string;
   repository?: string;
   method?: string;
-  /** Stable output fields or list-item text paths, such as `tasks.text`. */
+  /** Stable output fields or list-item text/field paths, such as `tasks.text` or `stories.fields.id`. */
   keyFields?: string[];
   adapterGenerator?: AdapterGenerator;
   engine: typeof ENGINE;

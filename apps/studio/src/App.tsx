@@ -120,7 +120,7 @@ function Home({ automations, accounts, refresh }: { automations: Automation[]; a
   const [workspaceView, setWorkspaceView] = useState("Automations");
   const [name, setName] = useState("Eligibility overview");
   const [startUrl, setStartUrl] = useState("http://127.0.0.1:4174/demo-portal");
-  const [template, setTemplate] = useState<"blank" | "eligibility-overview">("blank");
+  const [template, setTemplate] = useState<"blank" | "eligibility-overview" | "hn-front-page">("blank");
   const [error, setError] = useState<string | null>(null);
   const [runs, setRuns] = useState<Run[]>([]);
   const [spend, setSpend] = useState<SpendSummary | null>(null);
@@ -158,7 +158,7 @@ function Home({ automations, accounts, refresh }: { automations: Automation[]; a
       <div className="panel">
         <h2>New automation</h2>
         <p className="muted">
-          Start from a blank draft and record the workflow in a dedicated browser, or start from the reviewed eligibility-overview template (still requires a passing test before publishing).
+          Start from a blank draft, the reviewed eligibility-overview template, or the read-only Hacker News front-page template.
         </p>
         <form
           className="row"
@@ -166,7 +166,7 @@ function Home({ automations, accounts, refresh }: { automations: Automation[]; a
             e.preventDefault();
             setError(null);
             try {
-              const created = await api<Automation>("POST", "/studio/automations", { name, startUrl, ...(template === "eligibility-overview" ? { template } : {}) });
+              const created = await api<Automation>("POST", "/studio/automations", { name, startUrl, ...(template !== "blank" ? { template } : {}) });
               await refresh();
               navigate(`/automations/${created.id}`);
             } catch (err) {
@@ -176,9 +176,17 @@ function Home({ automations, accounts, refresh }: { automations: Automation[]; a
         >
           <input value={name} onChange={(e) => setName(e.target.value)} placeholder="name" />
           <input value={startUrl} onChange={(e) => setStartUrl(e.target.value)} placeholder="start URL" style={{ width: 340 }} />
-          <select value={template} onChange={(e) => setTemplate(e.target.value as "blank" | "eligibility-overview")}>
+          <select value={template} onChange={(e) => {
+            const next = e.target.value as "blank" | "eligibility-overview" | "hn-front-page";
+            setTemplate(next);
+            if (next === "hn-front-page") {
+              setName("Hacker News front page");
+              setStartUrl("https://news.ycombinator.com/news");
+            }
+          }}>
             <option value="blank">blank (record first)</option>
             <option value="eligibility-overview">template: eligibility overview</option>
+            <option value="hn-front-page">template: Hacker News front page (read-only)</option>
           </select>
           <button type="submit">Create</button>
         </form>

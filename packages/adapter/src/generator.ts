@@ -60,6 +60,10 @@ export function generateAdapter(recording: RecordingInput, definition: Automatio
   const unsupported: UnsupportedStep[] = [];
   const events = [...recording.events].sort((a, b) => a.seq - b.seq);
   const outputs = definition.outputs ?? [];
+  const lists = Object.fromEntries(Object.entries(definition.lists ?? {}).map(([name, spec]) => [
+    name,
+    spec.fields === undefined ? spec : { ...spec, fields: { ...spec.fields } }
+  ]));
   if (!outputs.length) unsupported.push({ seq: Number.MAX_SAFE_INTEGER, kind: "output", reason: "definition has no supported output locators" });
   const extractors = outputs.map((field) => {
     if (field.extractor.kind === "listItems" && !definition.lists?.[field.extractor.list]) {
@@ -82,7 +86,7 @@ export function generateAdapter(recording: RecordingInput, definition: Automatio
     "",
     "export async function run(page, input) {",
     ...body,
-    `  return await extractOutputs(page, ${JSON.stringify(extractors)}, ${JSON.stringify(definition.lists ?? {})});`,
+    `  return await extractOutputs(page, ${JSON.stringify(extractors)}, ${JSON.stringify(lists)});`,
     "}",
     ""
   ].join("\n");

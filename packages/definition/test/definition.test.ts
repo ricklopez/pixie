@@ -5,11 +5,14 @@ import {
   compatibility,
   definitionChecksum,
   eligibilityOverviewDefinition,
+  hackerNewsFrontPageDefinition,
+  HN_ORIGIN,
   inputJsonSchema,
   outputJsonSchema,
   suggestFromRecording,
   TODO_TEMPLATES,
   todoDefinition,
+  todoScript,
   validateDefinition,
   validateInput,
   verifyExtraction,
@@ -37,6 +40,20 @@ test("Todo templates use the exact list-item text identity", () => {
     const result = validateDefinition(definition, { allowLoopback: true });
     assert.ok(result.ok, `${template}: ${JSON.stringify(result)}`);
   }
+});
+
+test("Hacker News front-page definition validates with read-only identity and list fields", () => {
+  const hn = hackerNewsFrontPageDefinition();
+  const result = validateDefinition(hn);
+  assert.ok(result.ok, JSON.stringify(result));
+  assert.equal(hn.id, "hn-front-page");
+  assert.equal(hn.name, "Hacker News front page");
+  assert.equal(hn.startUrl, `${HN_ORIGIN}/news`);
+  assert.deepEqual(hn.allowedOrigins, [HN_ORIGIN]);
+  assert.deepEqual(hn.keyFields, ["stories.fields.id"]);
+  assert.deepEqual(hn.checkpoints[0]?.allowedEffects, []);
+  assert.deepEqual(todoScript(hn, {}), [{ operation: "DONE" }]);
+  assert.match(JSON.stringify(outputJsonSchema(hn)), /"fields"/);
 });
 
 test("loopback origins are rejected unless the synthetic exception is enabled", () => {
@@ -154,6 +171,25 @@ test("verification rejects missing required outputs and never fabricates default
   assert.ok(v.reasons.some((r) => /required output 'deductible' missing/.test(r)));
   const badNumber = verifyExtraction(def, { memberId: "DEMO-1002" }, { ...good, deductible: { value: "n/a", source: "table" } }, observedAt);
   assert.ok(!badNumber.accepted && !("deductible" in badNumber.data));
+});
+
+test("list size and unique-field assertions accept valid items and reject short, duplicate, and null fields", () => {
+  const hn = hackerNewsFrontPageDefinition();
+  const item = (id: string | null) => ({ text: `story-${id}`, completed: false, fields: { id } });
+  const verifyStories = (items: ReturnType<typeof item>[]) =>
+    verifyExtraction(hn, {}, { stories: { value: items, source: "list stories" } }, observedAt);
+  const tenUnique = Array.from({ length: 10 }, (_, i) => item(String(i)));
+
+  assert.equal(verifyStories(tenUnique).accepted, true);
+  const nine = verifyStories(tenUnique.slice(0, 9));
+  assert.equal(nine.accepted, false);
+  assert.equal(nine.checks.find((check) => check.kind === "listMinItems")?.passed, false);
+  const duplicate = verifyStories([...tenUnique.slice(0, 9), item("0")]);
+  assert.equal(duplicate.accepted, false);
+  assert.equal(duplicate.checks.find((check) => check.kind === "listUniqueField")?.passed, false);
+  const missing = verifyStories([...tenUnique.slice(0, 9), item(null)]);
+  assert.equal(missing.accepted, false);
+  assert.equal(missing.checks.find((check) => check.kind === "listUniqueField")?.passed, false);
 });
 
 test("recording review proposes checkpoints and inputs without values", () => {

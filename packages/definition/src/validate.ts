@@ -13,6 +13,7 @@ import {
   type FieldType,
   type InputField,
   type JsonSchemaObject,
+  type ListSpec,
   type OutputField
 } from "./types.js";
 
@@ -87,7 +88,21 @@ export function validateDefinition(input: unknown, options: { allowLoopback?: bo
       for (const [name, spec] of Object.entries(d.lists)) {
         if (!NAME.test(name)) push(`lists.${name}`, "list name must be an identifier");
         if (!isRecord(spec) || typeof spec.item !== "string" || !spec.item.trim() || typeof spec.text !== "string" || !spec.text.trim()) push(`lists.${name}`, "item and text selectors are required");
-        else lists.add(name);
+        else {
+          lists.add(name);
+          if (spec.fields !== undefined) {
+            if (!isRecord(spec.fields)) push(`lists.${name}.fields`, "must be an object");
+            else
+              for (const [fieldName, field] of Object.entries(spec.fields)) {
+                if (!NAME.test(fieldName)) push(`lists.${name}.fields.${fieldName}`, "field name must be an identifier");
+                if (!isRecord(field)) push(`lists.${name}.fields.${fieldName}`, "must be an object");
+                else {
+                  if (field.selector !== undefined && (typeof field.selector !== "string" || !field.selector.trim())) push(`lists.${name}.fields.${fieldName}.selector`, "must be a non-empty selector");
+                  if (field.attribute !== undefined && (typeof field.attribute !== "string" || !field.attribute.trim())) push(`lists.${name}.fields.${fieldName}.attribute`, "must be a non-empty attribute name");
+                }
+              }
+          }
+        }
       }
   }
   (Array.isArray(d.affordances) ? d.affordances : []).forEach((a, i) => {
@@ -201,12 +216,21 @@ export function validateDefinition(input: unknown, options: { allowLoopback?: bo
       d.keyFields.forEach((field, i) => {
         const output = outputs.find((item) => isRecord(item) && item.name === field) as Partial<OutputField> | undefined;
         const listItemPath = /^([A-Za-z_][A-Za-z0-9_]*)\.text$/.exec(field);
+        const listFieldPath = /^([A-Za-z_][A-Za-z0-9_]*)\.fields\.([A-Za-z_][A-Za-z0-9_]*)$/.exec(field);
         const listOutput = listItemPath
           ? outputs.find((item) => isRecord(item) && item.name === listItemPath[1]) as Partial<OutputField> | undefined
           : undefined;
         const validListItemKey = listOutput?.type === "list" && listOutput.required === true && listOutput.extractor?.kind === "listItems";
+        const listFieldOutput = listFieldPath
+          ? outputs.find((item) => isRecord(item) && item.name === listFieldPath[1]) as Partial<OutputField> | undefined
+          : undefined;
+        const listName = listFieldOutput?.extractor?.kind === "listItems" ? listFieldOutput.extractor.list : undefined;
+        const listSpec = listName && isRecord(d.lists) ? d.lists[listName] : undefined;
+        const listFields = isRecord(listSpec) && isRecord(listSpec.fields) ? listSpec.fields : undefined;
+        const validListFieldKey = listFieldOutput?.type === "list" && listFieldOutput.required === true &&
+          !!listFieldPath && !!listFields && Object.hasOwn(listFields, listFieldPath[2]!);
         if (seen.has(field)) push(`keyFields[${i}]`, "duplicate key field");
-        else if (!output && !validListItemKey) push(`keyFields[${i}]`, "must name a required output field or list item's text");
+        else if (!output && !validListItemKey && !validListFieldKey) push(`keyFields[${i}]`, "must name a required output field or list item's text/field");
         else if (output && output.required !== true) push(`keyFields[${i}]`, "key fields must be required outputs");
         seen.add(field);
       });
@@ -238,6 +262,26 @@ export function validateDefinition(input: unknown, options: { allowLoopback?: bo
         if (!outputNames.has(String(as.output))) push(`${p}.output`, "unknown output");
         if (!inputNames.has(String(as.input))) push(`${p}.input`, "unknown input");
         break;
+      case "listMinItems": {
+        const output = outputs.find((item) => isRecord(item) && item.name === as.output) as Partial<OutputField> | undefined;
+        if (!outputNames.has(String(as.output))) push(`${p}.output`, "unknown output");
+        else if (output?.type !== "list") push(`${p}.output`, "must name a list output");
+        if (typeof as.min !== "number" || !Number.isInteger(as.min) || as.min < 0) push(`${p}.min`, "must be a non-negative integer");
+        break;
+      }
+      case "listUniqueField": {
+        const output = outputs.find((item) => isRecord(item) && item.name === as.output) as Partial<OutputField> | undefined;
+        if (!outputNames.has(String(as.output))) push(`${p}.output`, "unknown output");
+        else if (output?.type !== "list") push(`${p}.output`, "must name a list output");
+        if (typeof as.field !== "string" || !as.field.trim()) push(`${p}.field`, "required");
+        else {
+          const listName = output?.extractor?.kind === "listItems" ? output.extractor.list : undefined;
+          const listSpec = listName && isRecord(d.lists) ? d.lists[listName] : undefined;
+          const fields = isRecord(listSpec) && isRecord(listSpec.fields) ? listSpec.fields : undefined;
+          if (!fields || !(as.field in fields)) push(`${p}.field`, "must name a declared list field");
+        }
+        break;
+      }
       default:
         push(`${p}.kind`, "unsupported assertion kind");
     }
@@ -256,7 +300,7 @@ export function validateDefinition(input: unknown, options: { allowLoopback?: bo
   return { ok: true, definition: d as unknown as AutomationDefinition };
 }
 
-function fieldSchema(type: FieldType): Record<string, unknown> {
+function fieldSchema(type: FieldType, listSpec?: ListSpec): Record<string, unknown> {
   switch (type) {
     case "string":
       return { type: "string", minLength: 1 };
@@ -266,11 +310,23 @@ function fieldSchema(type: FieldType): Record<string, unknown> {
       return { type: "boolean" };
     case "date":
       return { type: "string", format: "date" };
-    case "list":
+    case "list": {
+      const properties: Record<string, unknown> = { text: { type: "string" }, completed: { type: "boolean" } };
+      const required = ["text", "completed"];
+      if (listSpec?.fields) {
+        properties.fields = {
+          type: "object",
+          properties: Object.fromEntries(Object.keys(listSpec.fields).map((name) => [name, { type: ["string", "null"] }])),
+          required: Object.keys(listSpec.fields),
+          additionalProperties: false
+        };
+        required.push("fields");
+      }
       return {
         type: "array",
-        items: { type: "object", properties: { text: { type: "string" }, completed: { type: "boolean" } }, required: ["text", "completed"], additionalProperties: false }
+        items: { type: "object", properties, required, additionalProperties: false }
       };
+    }
   }
 }
 
@@ -291,7 +347,7 @@ export function outputJsonSchema(def: AutomationDefinition): JsonSchemaObject {
       def.outputs.map((o) => [
         o.name,
         {
-          ...(o.extractor.kind === "observedAt" ? { type: "string", format: "date-time" } : fieldSchema(o.type)),
+          ...(o.extractor.kind === "observedAt" ? { type: "string", format: "date-time" } : fieldSchema(o.type, o.extractor.kind === "listItems" ? def.lists?.[o.extractor.list] : undefined)),
           ...(o.description ? { description: o.description } : {})
         }
       ])
