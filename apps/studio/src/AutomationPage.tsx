@@ -271,6 +271,12 @@ function ReviewTab({ automation, changed }: { automation: Automation; changed: (
   const [issues, setIssues] = useState<{ path: string; message: string }[] | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
   const [recording, setRecording] = useState<RecordingView | null>(null);
+  const [generated, setGenerated] = useState<{ source: string; hash: string; unsupported: { seq: number; kind: string; reason: string }[] } | null>(null);
+  const [repairs, setRepairs] = useState<{ id: string; runId: string; source: string; sourceHash: string; state: string; validation: string; rejectionReason: string | null; activeSource: string | null }[]>([]);
+  const [repairRunId, setRepairRunId] = useState("");
+  const [repairSource, setRepairSource] = useState("");
+  const [rejectReason, setRejectReason] = useState("");
+  const [repairError, setRepairError] = useState<string | null>(null);
   const locked = automation.state === "published";
 
   useEffect(() => {
@@ -278,7 +284,16 @@ function ReviewTab({ automation, changed }: { automation: Automation; changed: (
   }, [automation.definition]);
   useEffect(() => {
     if (automation.recordingId) api<RecordingView>("GET", `/studio/automations/${automation.id}/recording`).then(setRecording).catch(() => setRecording(null));
+    if (automation.recordingId) api<typeof generated>("GET", `/studio/automations/${automation.id}/generated`).then(setGenerated).catch(() => setGenerated(null));
   }, [automation.id, automation.recordingId]);
+  const loadRepairs = useCallback(async () => {
+    try {
+      setRepairs(await api<typeof repairs>("GET", `/studio/automations/${automation.id}/repairs`));
+    } catch {
+      setRepairs([]);
+    }
+  }, [automation.id]);
+  useEffect(() => { void loadRepairs(); }, [loadRepairs]);
 
   const def = automation.definition;
   const applySuggestion = () => {
@@ -290,6 +305,51 @@ function ReviewTab({ automation, changed }: { automation: Automation; changed: (
   return (
     <>
       <div className="grid2">
+        {generated && <div className="panel" style={{ gridColumn: "1 / -1" }}>
+          <h2>Generated adapter (read-only)</h2>
+          <p className="muted">SHA-256: <code>{generated.hash}</code></p>
+          {generated.unsupported.length > 0 && <ul className="error">{generated.unsupported.map((item) => <li key={`${item.seq}-${item.kind}`}>step {item.seq}: {item.reason}</li>)}</ul>}
+          <pre style={{ maxHeight: 320, overflow: "auto" }}>{generated.source}</pre>
+        </div>}
+        <div className="panel" style={{ gridColumn: "1 / -1" }}>
+          <h2>Repairs</h2>
+          <p className="muted">Submit a manual adapter source for a failed run. Candidates remain pending until a developer approves them.</p>
+          <div className="row">
+            <input aria-label="Failed run ID" placeholder="Failed run ID" value={repairRunId} onChange={(e) => setRepairRunId(e.target.value)} />
+            <button disabled={!repairRunId || !repairSource} onClick={async () => {
+              setRepairError(null);
+              try {
+                await api("POST", `/studio/automations/${automation.id}/repairs`, { runId: repairRunId, source: repairSource });
+                setRepairSource("");
+                await loadRepairs();
+              } catch (e) { setRepairError(String(e)); }
+            }}>Submit candidate</button>
+            <button onClick={async () => {
+              setRepairError(null);
+              try { await api("POST", `/studio/automations/${automation.id}/bindings/rollback`, {}); await loadRepairs(); await changed(); }
+              catch (e) { setRepairError(String(e)); }
+            }}>Rollback</button>
+          </div>
+          <textarea aria-label="Manual adapter source" rows={8} value={repairSource} onChange={(e) => setRepairSource(e.target.value)} style={{ width: "100%", marginTop: 8, fontFamily: "monospace" }} />
+          {repairError && <p className="error">{repairError}</p>}
+          {repairs.map((candidate) => (
+            <div key={candidate.id} className="notice">
+              <div className="row" style={{ justifyContent: "space-between" }}>
+                <strong>{candidate.state}</strong><code>{candidate.sourceHash}</code>
+                {candidate.state === "awaiting_approval" && <>
+                  <button onClick={async () => { await api("POST", `/studio/repairs/${candidate.id}/approve`, {}); await loadRepairs(); await changed(); }}>Approve</button>
+                  <input aria-label="Rejection reason" placeholder="Rejection reason" value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} />
+                  <button onClick={async () => { await api("POST", `/studio/repairs/${candidate.id}/reject`, { reason: rejectReason || "rejected by developer" }); await loadRepairs(); }}>Reject</button>
+                </>}
+              </div>
+              <p className="muted">Run {candidate.runId} · validation: <code>{candidate.validation}</code></p>
+              {candidate.rejectionReason && <p>{candidate.rejectionReason}</p>}
+              <details><summary>Diff against active source</summary>
+                <pre>--- active{"\n"}{candidate.activeSource ?? "(no active script source)"}{"\n"}+++ candidate{"\n"}{candidate.source}</pre>
+              </details>
+            </div>
+          ))}
+        </div>
         <div className="panel">
           <h2>Inputs (caller-provided, injected by code)</h2>
           <table>

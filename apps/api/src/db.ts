@@ -97,6 +97,7 @@ CREATE TABLE IF NOT EXISTS adapter_revisions (
   id TEXT PRIMARY KEY, operation_version_id TEXT NOT NULL REFERENCES operation_versions(id), revision INTEGER NOT NULL,
   definition_hash TEXT NOT NULL, engine TEXT NOT NULL, engine_revision TEXT NOT NULL,
   generator TEXT NOT NULL CHECK (generator IN ('template','recorded','manual')),
+  source TEXT,
   automation_id TEXT NOT NULL REFERENCES automations(id), automation_revision INTEGER NOT NULL,
   hash TEXT NOT NULL, UNIQUE (operation_version_id, revision));
 CREATE TABLE IF NOT EXISTS publication_bindings (
@@ -133,7 +134,18 @@ CREATE TABLE IF NOT EXISTS evidence (
   run_id TEXT NOT NULL REFERENCES runs(id), name TEXT NOT NULL, path TEXT NOT NULL, content_type TEXT NOT NULL, PRIMARY KEY (run_id, name));
 CREATE TABLE IF NOT EXISTS spend_ledger (
   run_id TEXT PRIMARY KEY REFERENCES runs(id), at TEXT NOT NULL, provider_calls INTEGER NOT NULL,
-  input_tokens INTEGER NOT NULL, estimated_cost_usd REAL NOT NULL, browser_session_seconds INTEGER NOT NULL DEFAULT 0);
+  input_tokens INTEGER NOT NULL, estimated_cost_usd REAL NOT NULL, browser_session_seconds INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS repair_candidates (
+  id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, automation_id TEXT NOT NULL, run_id TEXT NOT NULL,
+  source TEXT NOT NULL, source_hash TEXT NOT NULL, generator TEXT NOT NULL CHECK (generator IN ('manual','model')),
+  state TEXT NOT NULL CHECK (state IN ('validating','awaiting_approval','gates_failed','approved','rejected')),
+  validation TEXT NOT NULL, gate_results TEXT NOT NULL DEFAULT '[]', gate_logs TEXT NOT NULL DEFAULT '{}',
+  model_calls INTEGER NOT NULL DEFAULT 0, input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
+  estimated_cost_usd REAL NOT NULL DEFAULT 0, rejection_reason TEXT, created_at TEXT NOT NULL, approved_at TEXT);
+CREATE TABLE IF NOT EXISTS repair_model_usage (
+  run_id TEXT PRIMARY KEY REFERENCES runs(id), calls INTEGER NOT NULL DEFAULT 0, input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0, estimated_cost_usd REAL NOT NULL DEFAULT 0);
 `;
 
 export function openDatabase(path: string): DatabaseSync {
@@ -148,7 +160,45 @@ export function openDatabase(path: string): DatabaseSync {
   ensureColumn(db, "runs", "operation_version_id", "TEXT");
   ensureColumn(db, "runs", "adapter_revision_id", "TEXT");
   ensureColumn(db, "spend_ledger", "browser_session_seconds", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "spend_ledger", "output_tokens", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "adapter_revisions", "source", "TEXT");
+  upgradeRepairCandidates(db);
   return db;
+}
+
+function upgradeRepairCandidates(db: DatabaseSync): void {
+  const schema = db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'repair_candidates'`).get() as { sql: string } | undefined;
+  if (!schema?.sql.includes("'gates_failed'")) {
+    db.exec("PRAGMA foreign_keys = OFF; BEGIN");
+    try {
+      db.exec(`ALTER TABLE repair_candidates RENAME TO repair_candidates_legacy;
+        CREATE TABLE repair_candidates (
+          id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, automation_id TEXT NOT NULL, run_id TEXT NOT NULL,
+          source TEXT NOT NULL, source_hash TEXT NOT NULL, generator TEXT NOT NULL CHECK (generator IN ('manual','model')),
+          state TEXT NOT NULL CHECK (state IN ('validating','awaiting_approval','gates_failed','approved','rejected')),
+          validation TEXT NOT NULL, gate_results TEXT NOT NULL DEFAULT '[]', gate_logs TEXT NOT NULL DEFAULT '{}',
+          model_calls INTEGER NOT NULL DEFAULT 0, input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
+          estimated_cost_usd REAL NOT NULL DEFAULT 0, rejection_reason TEXT, created_at TEXT NOT NULL, approved_at TEXT);
+        INSERT INTO repair_candidates
+          (id, tenant_id, automation_id, run_id, source, source_hash, generator, state, validation, gate_results, gate_logs,
+           model_calls, input_tokens, output_tokens, estimated_cost_usd, rejection_reason, created_at, approved_at)
+        SELECT id, tenant_id, automation_id, run_id, source, source_hash, generator,
+          CASE WHEN state = 'rejected' THEN 'rejected' ELSE 'gates_failed' END,
+          '{"accepted":false,"reason":"legacy gates were not executed"}', '[]', '{}',
+          0, 0, 0, 0, rejection_reason, created_at, approved_at FROM repair_candidates_legacy;
+        DROP TABLE repair_candidates_legacy; COMMIT; PRAGMA foreign_keys = ON;`);
+    } catch (error) {
+      db.exec("ROLLBACK; PRAGMA foreign_keys = ON");
+      throw error;
+    }
+  } else {
+    ensureColumn(db, "repair_candidates", "gate_results", "TEXT NOT NULL DEFAULT '[]'");
+    ensureColumn(db, "repair_candidates", "gate_logs", "TEXT NOT NULL DEFAULT '{}'");
+    ensureColumn(db, "repair_candidates", "model_calls", "INTEGER NOT NULL DEFAULT 0");
+    ensureColumn(db, "repair_candidates", "input_tokens", "INTEGER NOT NULL DEFAULT 0");
+    ensureColumn(db, "repair_candidates", "output_tokens", "INTEGER NOT NULL DEFAULT 0");
+    ensureColumn(db, "repair_candidates", "estimated_cost_usd", "REAL NOT NULL DEFAULT 0");
+  }
 }
 
 function ensureColumn(db: DatabaseSync, table: string, column: string, declaration: string): void {

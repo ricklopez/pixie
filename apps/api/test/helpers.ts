@@ -81,7 +81,7 @@ export class FakeRunner implements WorkerRunner {
   }
 }
 
-export async function testApp(runnerOptions: FakeRunnerOptions = {}) {
+export async function testApp(runnerOptions: FakeRunnerOptions = {}, overrides: { fireworksApiKey?: string; fireworksEndpoint?: string } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "gateway-api-test-"));
   const db = openDatabase(":memory:");
   bootstrap(db, TOKENS, PORTAL);
@@ -95,7 +95,8 @@ export async function testApp(runnerOptions: FakeRunnerOptions = {}) {
     },
     allowLoopback: true,
     publicBaseUrl: "http://gateway.test",
-    selectEngine: () => ({ engine: runnerOptions.providerCalls ? "live" : "scripted", script: [] })
+    selectEngine: () => ({ engine: runnerOptions.providerCalls ? "live" : "scripted", script: [] }),
+    ...overrides
   });
   await built.app.ready();
   return { ...built, runner, db };

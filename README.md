@@ -170,6 +170,25 @@ Repository REST calls pin a major with `Pixie-Contract-Version` or `?version=<ma
 `repository`, `method`, and `version` in place of `automationId`. Exercise v1, compatible, and breaking changes
 through the CLI with `scripts/e2e-contracts.sh`.
 
+### Recorded adapters and reviewed repairs
+
+Recorded interactions can be normalized into deterministic, parameterized adapter source:
+
+```sh
+pixie generate <automation-id> [--recording fixtures/recorded-eligibility.json]
+pixie test <automation-id> --engine script --follow
+pixie repair <automation-id> --run <run-id> --source repaired-adapter.ts
+pixie repairs <automation-id>
+pixie approve <repair-id>
+pixie rollback <automation-id>
+```
+
+Generated source is hashed and runs in a model-free child process. Repair candidates are manual-source
+candidates by default and require developer approval before the active binding changes. Fireworks pricing
+was confirmed in the official [serverless pricing documentation](https://docs.fireworks.ai/serverless/pricing):
+serverless text inference is billed per input, cached-input, and output token. Model-assisted repair remains
+disabled by default and no paid Fireworks call was made.
+
 
 Requires Node.js 24 (the workspace requires Node.js 22.13 or newer), Python 3, `uv`, and local Chrome.
 

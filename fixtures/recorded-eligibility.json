@@ -1,0 +1,57 @@
+{
+  "events": [
+    {
+      "seq": 1,
+      "at": 0,
+      "kind": "input",
+      "url": "http://127.0.0.1:4174/demo-portal",
+      "target": {
+        "tag": "input",
+        "role": "textbox",
+        "label": "Member ID",
+        "name": "memberId",
+        "id": null,
+        "placeholder": "DEMO-1001",
+        "inputType": "text",
+        "text": null,
+        "selectorHints": []
+      },
+      "hasValue": true,
+      "valueLength": 8
+    },
+    {
+      "seq": 2,
+      "at": 10,
+      "kind": "click",
+      "url": "http://127.0.0.1:4174/demo-portal",
+      "target": {
+        "tag": "button",
+        "role": "button",
+        "label": null,
+        "name": "Search",
+        "id": null,
+        "placeholder": null,
+        "inputType": null,
+        "text": "Search",
+        "selectorHints": []
+      }
+    },
+    {
+      "seq": 3,
+      "at": 20,
+      "kind": "click",
+      "url": "http://127.0.0.1:4174/demo-portal/members?memberId=DEMO-1001",
+      "target": {
+        "tag": "a",
+        "role": "link",
+        "label": null,
+        "name": "View benefits overview",
+        "id": null,
+        "placeholder": null,
+        "inputType": null,
+        "text": "View benefits overview",
+        "selectorHints": []
+      }
+    }
+  ]
+}

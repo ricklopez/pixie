@@ -17,6 +17,7 @@ coverage/
 .ruff_cache/
 # Browser state, recordings, evidence and databases (never source assets)
 artifacts/
+packages/adapter/.runs/
 recordings/
 evidence/
 browser-data/
