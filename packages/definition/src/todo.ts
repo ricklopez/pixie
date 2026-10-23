@@ -171,6 +171,8 @@ export function todoScript(definition: AutomationDefinition, input: Record<strin
       return [{ operation: "TYPE_TEXT", label: "Add a to-do item" }, { operation: "CLICK", label: "Add" }];
     case "show-all":
       return [{ operation: "DONE" }];
+    case "front-page":
+      return [{ operation: "DONE" }];
     case "open-editor":
       return [{ operation: "CLICK", label: `Edit task: ${String(input.title)}` }, { operation: "TYPE_TEXT", label: "Edited task title" }, { operation: "CLICK", label: "Save edited task" }];
     case "remove-task":

@@ -10,12 +10,23 @@ import time
 
 READ_LIST_JS = """((spec) => {
   const textOf = (e) => (e ? (e.innerText ?? e.textContent ?? '') : '').replace(/\\s+/g, ' ').trim();
+  const fieldTextOf = (e) => (e ? String(e.textContent ?? '').trim() : null);
   const out = [];
   for (const item of document.querySelectorAll(spec.item)) {
     if (!item.checkVisibility || !item.checkVisibility({checkVisibilityCSS:true})) continue;
     const t = item.querySelector(spec.text);
     if (!t) continue;
-    out.push({text: textOf(t), completed: spec.completed ? !!item.querySelector(spec.completed) : false});
+    const value = {text: textOf(t), completed: spec.completed ? !!item.querySelector(spec.completed) : false};
+    if (spec.fields !== undefined) {
+      value.fields = {};
+      for (const [name, field] of Object.entries(spec.fields)) {
+        const target = field.selector ? item.querySelector(field.selector) : item;
+        const fieldValue = !target ? null :
+          field.attribute === undefined ? fieldTextOf(target) : target.getAttribute(field.attribute);
+        value.fields[name] = fieldValue;
+      }
+    }
+    out.push(value);
   }
   return out;
 })"""

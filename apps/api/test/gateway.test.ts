@@ -147,6 +147,33 @@ test("A7/A8: model outage fails explicitly; expired login becomes awaiting_auth"
   await shutdown();
 });
 
+test("Hacker News is registered as a read-only template", async () => {
+  const { app, shutdown } = await testApp();
+  const created = await call(app, TOKENS.developer, "POST", "/studio/automations", {
+    name: "Hacker News front page",
+    startUrl: "https://news.ycombinator.com/news",
+    template: "hn-front-page"
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.json));
+  const definition = created.json.definition as {
+    startUrl: string;
+    allowedOrigins: string[];
+    effect: string;
+    inputs: unknown[];
+    keyFields: string[];
+    lists: Record<string, { fields?: Record<string, unknown> }>;
+    checkpoints: { allowedEffects: string[] }[];
+  };
+  assert.equal(definition.startUrl, "https://news.ycombinator.com/news");
+  assert.deepEqual(definition.allowedOrigins, ["https://news.ycombinator.com"]);
+  assert.equal(definition.effect, "read");
+  assert.deepEqual(definition.inputs, []);
+  assert.deepEqual(definition.keyFields, ["stories.fields.id"]);
+  assert.deepEqual(Object.keys(definition.lists.stories?.fields ?? {}), ["id", "rank", "url"]);
+  assert.deepEqual(definition.checkpoints[0]?.allowedEffects, []);
+  await shutdown();
+});
+
 test("A9: tenant isolation for automations, accounts, runs and evidence", async () => {
   const { app, runs, shutdown } = await testApp();
   const { id, revision } = await publishEligibility(app, runs);

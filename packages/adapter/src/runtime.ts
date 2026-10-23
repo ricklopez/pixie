@@ -122,7 +122,20 @@ export async function extractOutputs(
       for (const item of items) {
         const text = (await item.locator(spec.text).textContent())?.trim();
         if (!text) continue;
-        values.push({ text, completed: spec.completed ? (await item.locator(spec.completed).count()) > 0 : false });
+        const completed = spec.completed ? (await item.locator(spec.completed).count()) > 0 : false;
+        if (spec.fields === undefined) {
+          values.push({ text, completed });
+          continue;
+        }
+        const fields: Record<string, string | null> = {};
+        for (const [name, field] of Object.entries(spec.fields)) {
+          const target = field.selector ? item.locator(field.selector) : item;
+          const value = field.attribute === undefined
+            ? (await target.textContent())?.trim() ?? null
+            : await target.getAttribute(field.attribute);
+          fields[name] = value;
+        }
+        values.push({ text, completed, fields });
       }
       result[field.name] = values;
     }

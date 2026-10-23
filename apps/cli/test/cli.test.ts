@@ -392,6 +392,7 @@ test("Studio commands use the developer token, JSON output is API JSON, and unsa
       ["--json", "accounts", "list"],
       ["accounts", "add", "--name", "Demo account", "--origin", "http://127.0.0.1:4174", "--id", "acct-demo", "--json"],
       ["create", "Synthetic eligibility", "--url", "http://127.0.0.1:4174/demo-portal", "--template", "eligibility-overview", "--allowed-origin", "http://127.0.0.1:4174", "--json"],
+      ["create", "Hacker News front page", "--url", "https://news.ycombinator.com/news", "--template", "hn-front-page", "--json"],
       ["show", "auto-1", "--json"],
       ["record", "start", "auto-1", "--json"],
       ["record", "status", "auto-1", "--json"],
@@ -424,6 +425,12 @@ test("Studio commands use the developer token, JSON output is API JSON, and unsa
       startUrl: "http://127.0.0.1:4174/demo-portal",
       template: "eligibility-overview",
       allowedOrigins: ["http://127.0.0.1:4174"]
+    });
+    const hnCreate = requests.find((request) => request.method === "POST" && request.url === "/studio/automations" && request.body.template === "hn-front-page");
+    assert.deepEqual(hnCreate?.body, {
+      name: "Hacker News front page",
+      startUrl: "https://news.ycombinator.com/news",
+      template: "hn-front-page"
     });
     assert.ok(requests.every((request) => !request.url.startsWith("/studio/") || request.auth === "Bearer dev-test-token"));
     const { lines: keyLines, out: keyOut } = capture();

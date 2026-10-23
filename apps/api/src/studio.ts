@@ -5,6 +5,7 @@ import type { FastifyInstance } from "fastify";
 import {
   definitionChecksum,
   eligibilityOverviewDefinition,
+  hackerNewsFrontPageDefinition,
   TODO_TEMPLATES,
   todoDefinition,
   type TodoTemplate,
@@ -305,13 +306,15 @@ export function registerStudioRoutes(app: FastifyInstance, ctx: StudioContext) {
     studio.get("/studio/automations", async (req) =>
       (db.prepare(`SELECT * FROM automations WHERE tenant_id = ? ORDER BY created_at`).all(req.principal.tenantId) as unknown as AutomationRow[]).map(view)
     );
-    studio.post<{ Body: { name: string; startUrl: string; allowedOrigins?: string[]; template?: "eligibility-overview" | TodoTemplate } }>("/studio/automations", async (req, reply) => {
+    studio.post<{ Body: { name: string; startUrl: string; allowedOrigins?: string[]; template?: "eligibility-overview" | "hn-front-page" | TodoTemplate } }>("/studio/automations", async (req, reply) => {
       const id = `auto-${randomUUID().slice(0, 8)}`;
       const origins = req.body.allowedOrigins ?? [new URL(req.body.startUrl).origin];
       const template = req.body.template;
       const definition =
         template === "eligibility-overview"
           ? { ...eligibilityOverviewDefinition(new URL(req.body.startUrl).origin), id, name: req.body.name, adapterGenerator: "template" as const }
+          : template === "hn-front-page"
+            ? { ...hackerNewsFrontPageDefinition(new URL(req.body.startUrl).origin), id, name: req.body.name, adapterGenerator: "template" as const }
           : template && (TODO_TEMPLATES as readonly string[]).includes(template)
             ? { ...todoDefinition(template as TodoTemplate, new URL(req.body.startUrl).origin), id, name: req.body.name, adapterGenerator: "template" as const }
             : { ...newDefinition({ id, name: req.body.name, startUrl: req.body.startUrl, allowedOrigins: origins }), adapterGenerator: "manual" as const };
