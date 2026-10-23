@@ -1,0 +1,112 @@
+{
+  "baseline": {
+    "create": {
+      "terminal": "completed",
+      "dispatchCount": 1,
+      "modelCallAttempts": 0
+    },
+    "list": {
+      "terminal": "completed",
+      "dispatchCount": 0,
+      "modelCallAttempts": 0
+    },
+    "rename": {
+      "terminal": "completed",
+      "dispatchCount": 1,
+      "modelCallAttempts": 0
+    },
+    "delete": {
+      "terminal": "completed",
+      "dispatchCount": 1,
+      "modelCallAttempts": 0
+    }
+  },
+  "cosmetic": {
+    "create": {
+      "terminal": "completed",
+      "dispatchCount": 1,
+      "modelCallAttempts": 0
+    },
+    "list": {
+      "terminal": "completed",
+      "dispatchCount": 0,
+      "modelCallAttempts": 0
+    },
+    "rename": {
+      "terminal": "completed",
+      "dispatchCount": 1,
+      "modelCallAttempts": 0
+    },
+    "delete": {
+      "terminal": "completed",
+      "dispatchCount": 1,
+      "modelCallAttempts": 0
+    }
+  },
+  "locator-break": {
+    "create": {
+      "terminal": "completed",
+      "dispatchCount": 1,
+      "modelCallAttempts": 0
+    },
+    "list": {
+      "terminal": "completed",
+      "dispatchCount": 0,
+      "modelCallAttempts": 0
+    },
+    "rename": {
+      "terminal": "failed",
+      "dispatchCount": 0,
+      "modelCallAttempts": 0
+    },
+    "delete": {
+      "terminal": "completed",
+      "dispatchCount": 1,
+      "modelCallAttempts": 0
+    }
+  },
+  "ambiguous": {
+    "create": {
+      "terminal": "completed",
+      "dispatchCount": 1,
+      "modelCallAttempts": 0
+    },
+    "list": {
+      "terminal": "completed",
+      "dispatchCount": 0,
+      "modelCallAttempts": 0
+    },
+    "rename": {
+      "terminal": "needs_review",
+      "dispatchCount": 0,
+      "modelCallAttempts": 0
+    },
+    "delete": {
+      "terminal": "needs_review",
+      "dispatchCount": 0,
+      "modelCallAttempts": 0
+    }
+  },
+  "rule-change": {
+    "create": {
+      "terminal": "contract_revision_required",
+      "dispatchCount": 0,
+      "modelCallAttempts": 0
+    },
+    "list": {
+      "terminal": "completed",
+      "dispatchCount": 0,
+      "modelCallAttempts": 0
+    },
+    "rename": {
+      "terminal": "contract_revision_required",
+      "dispatchCount": 0,
+      "modelCallAttempts": 0
+    },
+    "delete": {
+      "terminal": "contract_revision_required",
+      "dispatchCount": 0,
+      "modelCallAttempts": 0
+    }
+  }
+}
