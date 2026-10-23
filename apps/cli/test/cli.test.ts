@@ -154,7 +154,19 @@ async function withApi(run: (baseUrl: string, requests: RequestRecord[]) => Prom
         });
       }
       if (path === "/studio/automations/auto-1/publish" && record.method === "POST") {
-        return send(201, { automationId: "auto-1", revision: 1, checksum: "published-checksum", openapiUrl: "http://127.0.0.1:4180/v1/automations/auto-1/openapi.json" });
+        return send(201, {
+          automationId: "auto-1", revision: 1, checksum: "published-checksum",
+          openapiUrl: "http://127.0.0.1:4180/v1/automations/auto-1/openapi.json",
+          compatibility: "adapter", repository: "repo", method: "get",
+          modelVersion: { id: "model-1", major: 1, minor: 0 },
+          operationVersion: { id: "operation-1", major: 1, minor: 0 },
+          adapterRevision: { id: "adapter-1", revision: 1 },
+          artifact: { hash: "artifact-hash", size: 1024, reused: true },
+          activation: { id: "activation-1", state: "active" }
+        });
+      }
+      if (path === "/studio/activations/activation-1" && record.method === "GET") {
+        return send(200, { id: "activation-1", state: "active", artifactHash: "artifact-hash" });
       }
       if (path === "/studio/models" && record.method === "GET") return send(200, [{ name: "repo.get.output", major: 1, minor: 0, identityFields: ["memberId"] }]);
       if (path === "/studio/repositories" && record.method === "GET") return send(200, [{ name: "repo", operationCount: 1 }]);
@@ -289,6 +301,20 @@ test("generate and reviewed repair lifecycle commands use their shared API route
     assert.ok(requests.some((request) => request.url === "/studio/repairs/repair-1/approve"));
     assert.ok(requests.some((request) => request.url === "/studio/repairs/repair-1/reject" && (request.body as { reason?: string }).reason === "not safe"));
     assert.ok(requests.some((request) => request.url === "/studio/automations/auto-1/bindings/rollback"));
+  });
+});
+
+test("publish reports artifact reuse and activation, and activations retrieves its timeline", async () => {
+  await withApi(async (_baseUrl, requests) => {
+    const published = capture();
+    assert.equal(await main(["publish", "auto-1"], published.out), 0);
+    assert.ok(published.lines.some((line) => line.includes("artifact-hash") && line.includes("reused")));
+    assert.ok(published.lines.some((line) => line.includes("activation-1") && line.includes("active")));
+
+    const timeline = capture();
+    assert.equal(await main(["activations", "activation-1", "--json"], timeline.out), 0);
+    assert.equal(JSON.parse(timeline.lines[0]!).state, "active");
+    assert.ok(requests.some((request) => request.url === "/studio/activations/activation-1" && request.method === "GET"));
   });
 });
 

@@ -133,6 +133,6 @@ test("P7: the worker for a run receives the CDP endpoint of that run's account o
   // A client of another tenant cannot route a run into this account's browser.
   const foreign = await call(app, TOKENS.otherTenantClient, "POST", `/v1/automations/${id}/runs`, { revision, accountId: "acct_demo", input: { memberId: "DEMO-1002" } });
   assert.notEqual(foreign.status, 202);
-  assert.equal(runner.commands.length, 2);
+  assert.equal(runner.commands.length, 3); // the test run, publication smoke, and client run
   await shutdown();
 });

@@ -8,6 +8,7 @@ import { registerV1Routes } from "./v1.js";
 import { registerMcpRoute } from "./mcp.js";
 import { backfillPublishedContracts } from "./contracts.js";
 import type { BrowserProvider, BrowserbaseProvider } from "./browser-provider.js";
+import { reconcilePublicationActivations } from "./publication.js";
 
 export interface AppOptions extends Omit<RunManagerOptions, "db"> {
   db: DatabaseSync;
@@ -54,6 +55,7 @@ export function buildApp(options: AppOptions): { app: FastifyInstance; runs: Run
     browserProviders: options.browserProviders,
     scriptRunner: options.scriptRunner
   });
+  reconcilePublicationActivations(options.db);
   app.get("/health", async () => ({ ok: true, time: now() }));
   const studio = registerStudioRoutes(app, {
     runs,

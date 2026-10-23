@@ -23,6 +23,7 @@ export interface FakeRunnerOptions {
   delayMs?: number;
   mode?: "portal" | "model-down";
   providerCalls?: number;
+  failOnRunNumber?: number;
 }
 
 /**
@@ -45,8 +46,38 @@ export class FakeRunner implements WorkerRunner {
         onEvent({ type: "started", runId: command.runId, engine: command.engine });
         for (let i = 0; i < (this.options.providerCalls ?? 0); i += 1) onEvent({ type: "provider_call", provider: "typesafe" });
         if (cancelled) return done({ type: "finished", outcome: "cancelled", reason: "Cancellation requested", elapsedMs: 1, modelCalls: 0, providerCalls: this.options.providerCalls ?? 0, actions: 0 });
+        if (this.options.failOnRunNumber === this.commands.length) {
+          return done({ type: "finished", outcome: "failed", reason: "injected smoke failure", elapsedMs: 1, modelCalls: 0, providerCalls: this.options.providerCalls ?? 0, actions: 0 });
+        }
         if (this.options.mode === "model-down") {
           return done({ type: "finished", outcome: "failed", reason: "RuntimeError: Model provider returned HTTP 503; no action executed.", elapsedMs: 5, modelCalls: 1, providerCalls: this.options.providerCalls ?? 0, actions: 0 });
+        }
+        const todoCheckpoint = command.definition.checkpoints[0]?.id;
+        if (["add-task", "show-all", "open-editor", "remove-task"].includes(todoCheckpoint ?? "")) {
+          const input = command.input as Record<string, unknown>;
+          const taskText = todoCheckpoint === "add-task"
+            ? input.title
+            : todoCheckpoint === "open-editor"
+              ? input.newTitle
+              : undefined;
+          const outputCheckpoint = command.definition.checkpoints.find((checkpoint) => checkpoint.mutation)?.id ?? todoCheckpoint;
+          const outputs = {
+            tasks: {
+              value: taskText ? [{ text: String(taskText), completed: false }] : [],
+              source: "fake todo portal",
+              checkpointId: outputCheckpoint
+            }
+          };
+          const mutations = command.definition.checkpoints.flatMap((checkpoint) => checkpoint.mutation ? [{
+            checkpointId: checkpoint.id,
+            kind: checkpoint.mutation.kind,
+            ok: true,
+            reason: null,
+            before: checkpoint.mutation.kind === "create" ? 0 : 1,
+            after: checkpoint.mutation.kind === "delete" ? 0 : 1
+          }] : []);
+          onEvent({ type: "extraction", outputs, mutations, observedAt: new Date().toISOString(), finalUrl: `${PORTAL}/demo-portal` });
+          return done({ type: "finished", outcome: "extracted", reason: null, elapsedMs: 2, modelCalls: 0, providerCalls: this.options.providerCalls ?? 0, actions: 1 });
         }
         const memberId = String(command.input.memberId);
         const view = PORTAL_VIEW[memberId];
