@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DeleteTodoInput",
+  "type": "object",
+  "properties": {
+    "id": { "type": "string", "format": "uuid" },
+    "requestId": { "type": "string", "format": "uuid" }
+  },
+  "required": ["id", "requestId"],
+  "additionalProperties": false
+}

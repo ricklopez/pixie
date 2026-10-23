@@ -1,0 +1,22 @@
+{
+  "create": {
+    "generator": "pixie-template-generator@1.0.0",
+    "traceHash": "1b36ca84b84eab5bba3e2b098c8075260441ebbe30efbec6b3c65e83a2b07ce4",
+    "outputHash": "da741dca803cb9db13c45fb284764d3c79f7e687c0f782a7672084056588c03e"
+  },
+  "list": {
+    "generator": "pixie-template-generator@1.0.0",
+    "traceHash": "80910627d2ae1bd6a9611f5a2bfe26ebf2ab2d2dda6accc7f1a4c2c460b2e4e2",
+    "outputHash": "bda29c2b83d8dd2635ab6800afd3dcc814b77d63a4c0792cbfd00dbc97c3cead"
+  },
+  "rename": {
+    "generator": "pixie-template-generator@1.0.0",
+    "traceHash": "c7159125e56265619726e3e8d705b595c1eb2a222adc6d30f951cd681ae815f3",
+    "outputHash": "f5e7b37e038beb69842d2fcd8d2f321765cb1e808870dc5fcb33f4e57b9d4c66"
+  },
+  "delete": {
+    "generator": "pixie-template-generator@1.0.0",
+    "traceHash": "9d3c9e69745c0850d77cf402581df3b18268889576d2b1ddcbf66bbabd3b9a45",
+    "outputHash": "2c76e17762310e94ef7dff9960d44c18c5fcf97f08925b4e55083ab4dc92f196"
+  }
+}
